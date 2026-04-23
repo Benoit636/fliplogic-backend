@@ -1,32 +1,15 @@
 {
 "name": "fliplogic-api",
 "version": "1.0.0",
-"description": "FlipLogic - Vehicle appraisal platform API",
 "main": "src/server.js",
 "scripts": {
-"start": "node src/server.js",
-"dev": "nodemon src/server.js"
+"start": "node src/server.js"
 },
-"author": "Benoit Boudreau",
-"license": "MIT",
 "dependencies": {
 "express": "^4.18.2",
 "cors": "^2.8.5",
 "dotenv": "^16.3.1",
-"pg": "^8.11.3",
-"stripe": "^14.9.0",
-"firebase-admin": "^12.0.0",
-"openai": "^4.26.0",
-"nodemailer": "^6.9.7",
-"helmet": "^7.1.0",
-"express-rate-limit": "^7.1.5",
 "jsonwebtoken": "^9.1.2",
-"bcryptjs": "^2.4.3",
-"winston": "^3.11.0",
-"morgan": "^1.10.0",
-"uuid": "^9.0.1"
-},
-"devDependencies": {
-"nodemon": "^3.0.2"
+"bcryptjs": "^2.4.3"
 }
 }
