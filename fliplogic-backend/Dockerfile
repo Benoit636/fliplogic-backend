@@ -1,13 +1,7 @@
 FROM node:18-alpine
-
 WORKDIR /app
-
-COPY package*.json ./
-
-RUN npm install
-
-COPY . .
-
+COPY fliplogic-backend/package*.json ./
+RUN npm ci --only=production
+COPY fliplogic-backend/src ./src
 EXPOSE 3000
-
-CMD ["node", "src/server.js"]
+CMD ["npm", "start"]
