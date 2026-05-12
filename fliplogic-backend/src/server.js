@@ -153,7 +153,7 @@ app.post('/api/appraisals', async (req, res) => {
 
     appraisalsStore.set(appraisalId, appraisal);
 
-    res.json({ appraisalId, status: 'created' });
+    res.json({ id: appraisalId, appraisalId, status: 'created' });
   } catch (err) {
     console.error('Create appraisal error:', err);
     res.status(500).json({ error: err.message });
