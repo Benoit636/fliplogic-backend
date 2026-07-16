@@ -78,12 +78,16 @@ try {
 const { email, password } = req.body;
 
 const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+console.log('LOGIN DEBUG - users found:', result.rows.length);
 if (result.rows.length === 0) {
-return res.status(401).json({ error: 'Invalid email or password' });
+ return res.status(401).json({ error: 'Invalid email or password' });
 }
 
 const user = result.rows[0];
+console.log('LOGIN DEBUG - stored hash:', user.password);
+console.log('LOGIN DEBUG - password received:', password);
 const valid = await bcrypt.compare(password, user.password);
+console.log('LOGIN DEBUG - bcrypt valid:', valid);
 if (!valid) {
 return res.status(401).json({ error: 'Invalid email or password' });
 }
