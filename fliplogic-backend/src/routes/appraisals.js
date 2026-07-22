@@ -11,6 +11,7 @@ const router = express.Router();
 // Validation schemas
 const createAppraisalSchema = z.object({
   vin: z.string().length(17, 'VIN must be 17 characters'),
+  mileage: z.number().min(0).max(999999).optional(),
   appraisalType: z.enum(['on-site', 'sight-unseen']),
   conditionData: z.record(z.any()).optional(),
   customReconCost: z.number().positive().optional(),
@@ -23,7 +24,7 @@ const createAppraisalSchema = z.object({
  */
 router.post('/', verifyAuthToken, async (req, res) => {
   try {
-    const { vin, appraisalType, conditionData, customReconCost, searchRadiusKm } =
+    const { vin, mileage, appraisalType, conditionData, customReconCost, searchRadiusKm } =
       createAppraisalSchema.parse(req.body);
 
     const userId = req.user.id;
@@ -55,9 +56,9 @@ router.post('/', verifyAuthToken, async (req, res) => {
     // Insert appraisal
     const insertResult = await pool.query(
       `INSERT INTO appraisals (
-        id, user_id, vin, appraisal_type, vehicle_year, vehicle_make, 
-        vehicle_model, condition_data, custom_recon_cost, search_radius_km, status
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        id, user_id, vin, appraisal_type, vehicle_year, vehicle_make,
+        vehicle_model, vehicle_mileage, condition_data, custom_recon_cost, search_radius_km, status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       RETURNING *`,
       [
         appraisalId,
@@ -67,6 +68,7 @@ router.post('/', verifyAuthToken, async (req, res) => {
         vehicleData.year,
         vehicleData.make,
         vehicleData.model,
+        mileage ?? null,
         JSON.stringify(conditionData || {}),
         customReconCost || null,
         searchRadiusKm,
