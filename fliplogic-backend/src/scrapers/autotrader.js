@@ -17,8 +17,8 @@ export async function scrapeAutoTrader(vin, params = {}) {
     maxRetries = 3,
   } = params;
 
-  if (!year || !make || !model) {
-    throw new Error('Year, make, and model are required');
+  if (!year || !make) {
+    throw new Error('Year and make are required');
   }
 
   let browser;
@@ -139,7 +139,7 @@ export async function scrapeAutoTrader(vin, params = {}) {
 function buildAutoTraderUrl(year, make, model, radiusKm) {
   const baseUrl = 'https://www.autotrader.ca/cars';
   const params = new URLSearchParams({
-    mkm: `${make},${model}`,
+    mkm: model ? `${make},${model}` : make,
     sts: year.toString(),
     rcs: Math.ceil(radiusKm / 1.60934).toString(), // Convert km to miles
     sort: 'price_asc',

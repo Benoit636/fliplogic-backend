@@ -307,8 +307,15 @@ async function parseVIN(vin) {
   const make = result.Make || '';
   const model = result.Model || '';
 
-  if (!year || !make || !model) {
-    throw new Error('Unable to decode year, make, and model from this VIN');
+  // Year and Make come from fixed VIN-position tables and are reliable on
+  // any clean decode. Model depends on the manufacturer's own data
+  // submission to NHTSA and is legitimately blank even on an otherwise
+  // clean decode (NHTSA ErrorCode 14) — don't reject the VIN for that.
+  if (!year || !make) {
+    throw new Error('Unable to decode year and make from this VIN');
+  }
+  if (!model) {
+    logger.warn(`VIN ${vin} decoded without a Model (NHTSA: ${result.ErrorText || 'no model data'})`);
   }
 
   return { year, make, model };
