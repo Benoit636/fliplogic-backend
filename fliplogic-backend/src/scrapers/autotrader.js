@@ -29,6 +29,11 @@ export async function scrapeAutoTrader(vin, params = {}) {
       browser = await puppeteer.launch({
         headless: 'new',
         args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        // On Alpine (production), puppeteer's own bundled Chromium can't
+        // run — the Dockerfile installs the system `chromium` package and
+        // points this at it instead. Locally/on glibc this is unset, so
+        // puppeteer falls back to its own downloaded browser.
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
       });
 
       const page = await browser.newPage();

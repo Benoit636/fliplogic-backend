@@ -1,89 +1,118 @@
 import express from 'express';
-import { v4 as uuidv4 } from 'uuid';
-import { pool } from '../server.js';
+import bcrypt from 'bcryptjs';
+import Stripe from 'stripe';
+import { pool } from '../config/db.js';
 import logger from '../config/logger.js';
 import { createToken } from '../middleware/auth.js';
-import Stripe from 'stripe';
 
 const router = express.Router();
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+const stripe = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
+
+function toAuthUser(user) {
+  return {
+    id: user.id,
+    email: user.email,
+    displayName: user.display_name,
+    dealershipName: user.company_name,
+    subscriptionStatus: user.subscription_status,
+    trialEndsAt: user.trial_ends_at,
+  };
+}
+
+/**
+ * POST /api/auth/register
+ */
+router.post('/register', async (req, res) => {
+  try {
+    const { email, password, firstName, lastName, dealershipName } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
+
+    const existing = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
+    if (existing.rows.length > 0) {
+      return res.status(400).json({ error: 'Email already registered' });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const displayName = [firstName, lastName].filter(Boolean).join(' ').trim() || null;
+    const trialEndsAt = new Date();
+    trialEndsAt.setDate(trialEndsAt.getDate() + 14);
+
+    // Stripe is a nice-to-have for billing later, not a hard dependency
+    // for account creation — never block signup on it being reachable.
+    let stripeCustomerId = null;
+    if (stripe) {
+      try {
+        const customer = await stripe.customers.create({ email, name: displayName || undefined });
+        stripeCustomerId = customer.id;
+      } catch (stripeErr) {
+        logger.warn('Stripe customer creation failed (continuing without it):', stripeErr.message);
+      }
+    }
+
+    const insertResult = await pool.query(
+      `INSERT INTO users (
+        email, password, password_hash, first_name, last_name, dealership_name,
+        display_name, company_name, subscription_status, subscription_tier,
+        trial_ends_at, stripe_customer_id
+      ) VALUES ($1, $2, $2, $3, $4, $5, $6, $5, $7, $8, $9, $10)
+      RETURNING *`,
+      [
+        email,
+        passwordHash,
+        firstName || null,
+        lastName || null,
+        dealershipName || null,
+        displayName,
+        'trial',
+        'starter',
+        trialEndsAt,
+        stripeCustomerId,
+      ]
+    );
+
+    const user = insertResult.rows[0];
+    const token = createToken(user.id);
+
+    logger.info(`🆕 New user registered: ${email}`);
+
+    res.status(201).json({ token, user: toAuthUser(user) });
+  } catch (error) {
+    logger.error('Register error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
 /**
  * POST /api/auth/login
- * Handle OAuth callback and create/update user
  */
 router.post('/login', async (req, res) => {
   try {
-    const { firebaseUid, email, displayName, photoUrl } = req.body;
+    const { email, password } = req.body;
 
-    if (!firebaseUid || !email) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    // Check if user exists
-    let userResult = await pool.query(
-      'SELECT * FROM users WHERE firebase_uid = $1',
-      [firebaseUid]
-    );
-
-    let user;
-
-    if (userResult.rows.length === 0) {
-      // New user - create account with trial
-      const userId = uuidv4();
-      const trialEndsAt = new Date();
-      trialEndsAt.setDate(trialEndsAt.getDate() + 14); // 14-day trial
-
-      // Create Stripe customer
-      const stripeCustomer = await stripe.customers.create({
-        email,
-        name: displayName,
-        metadata: { firebase_uid: firebaseUid },
-      });
-
-      const insertResult = await pool.query(
-        `INSERT INTO users (
-          id, email, firebase_uid, display_name, profile_image_url,
-          subscription_status, subscription_tier, trial_ends_at,
-          stripe_customer_id, created_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        RETURNING id, email, subscription_status, trial_ends_at`,
-        [
-          userId,
-          email,
-          firebaseUid,
-          displayName || 'User',
-          photoUrl || null,
-          'trial',
-          'starter',
-          trialEndsAt,
-          stripeCustomer.id,
-          new Date(),
-        ]
-      );
-
-      user = insertResult.rows[0];
-      logger.info(`🆕 New user created: ${email}`);
-    } else {
-      // Existing user
-      user = userResult.rows[0];
+    const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    if (result.rows.length === 0) {
+      return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    // Create JWT token
+    const user = result.rows[0];
+    const valid = await bcrypt.compare(password, user.password_hash || user.password);
+    if (!valid) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
     const token = createToken(user.id);
 
     logger.info(`✅ User logged in: ${email}`);
 
-    res.json({
-      user: {
-        id: user.id,
-        email: user.email,
-        subscriptionStatus: user.subscription_status,
-        trialEndsAt: user.trial_ends_at,
-      },
-      token,
-      expiresIn: '7d',
-    });
+    res.json({ token, user: toAuthUser(user) });
   } catch (error) {
     logger.error('Login error:', error);
     res.status(500).json({ error: error.message });
@@ -92,34 +121,10 @@ router.post('/login', async (req, res) => {
 
 /**
  * POST /api/auth/logout
- * Logout user (invalidate token on client)
  */
 router.post('/logout', (req, res) => {
-  // JWT tokens are stateless, logout happens on client
-  // In production, you might want to maintain a blacklist
+  // JWTs are stateless — logout happens client-side by discarding the token.
   res.json({ message: 'Logged out successfully' });
-});
-
-/**
- * POST /api/auth/refresh
- * Refresh JWT token
- */
-router.post('/refresh', (req, res) => {
-  try {
-    const { refreshToken } = req.body;
-
-    if (!refreshToken) {
-      return res.status(400).json({ error: 'Refresh token required' });
-    }
-
-    // Verify refresh token and issue new access token
-    // Implementation depends on your refresh token strategy
-
-    res.json({ error: 'Not implemented' });
-  } catch (error) {
-    logger.error('Refresh token error:', error);
-    res.status(500).json({ error: error.message });
-  }
 });
 
 export default router;

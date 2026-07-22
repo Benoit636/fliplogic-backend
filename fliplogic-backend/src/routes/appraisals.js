@@ -1,10 +1,9 @@
 import express from 'express';
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
-import { pool, redisClient } from '../server.js';
+import { pool, redisClient } from '../config/db.js';
 import logger from '../config/logger.js';
 import { scrapeAutoTrader } from '../scrapers/autotrader.js';
-import { analyzeWithOpenAI } from '../services/openai.js';
 import { verifyAuthToken } from '../middleware/auth.js';
 
 const router = express.Router();
@@ -46,7 +45,12 @@ router.post('/', verifyAuthToken, async (req, res) => {
     }
 
     // Parse VIN to get vehicle data
-    const vehicleData = parseVIN(vin);
+    let vehicleData;
+    try {
+      vehicleData = await parseVIN(vin);
+    } catch (vinErr) {
+      return res.status(400).json({ error: `Could not decode VIN: ${vinErr.message}` });
+    }
 
     // Insert appraisal
     const insertResult = await pool.query(
@@ -167,8 +171,9 @@ router.post('/:id/analyze', verifyAuthToken, async (req, res) => {
         system_recon_estimate = $3,
         comps_analyzed = $4,
         comps_data = $5,
-        status = $6
-      WHERE id = $7
+        pricing_strategy = $6,
+        status = $7
+      WHERE id = $8
       RETURNING *`,
       [
         acquisitionCost,
@@ -176,6 +181,7 @@ router.post('/:id/analyze', verifyAuthToken, async (req, res) => {
         reconCost,
         comparables.length,
         JSON.stringify(comparables),
+        JSON.stringify(pricingStrategy),
         'complete',
         id,
       ]
@@ -220,7 +226,26 @@ router.get('/:id', verifyAuthToken, async (req, res) => {
       return res.status(404).json({ error: 'Appraisal not found' });
     }
 
-    res.json(result.rows[0]);
+    const appraisal = result.rows[0];
+
+    if (appraisal.status !== 'complete') {
+      return res.json({ appraisal, pricingStrategy: null, analysis: null });
+    }
+
+    const acquisitionCost = Number(appraisal.acquisition_cost);
+    const reconCost = Number(appraisal.custom_recon_cost || appraisal.system_recon_estimate);
+
+    res.json({
+      appraisal,
+      pricingStrategy: appraisal.pricing_strategy,
+      analysis: {
+        acquisitionCost,
+        reconCost,
+        marketValue: Number(appraisal.market_value),
+        totalInvestment: acquisitionCost + reconCost,
+        comparablesAnalyzed: appraisal.comps_analyzed,
+      },
+    });
   } catch (error) {
     logger.error('Error fetching appraisal:', error);
     res.status(500).json({ error: error.message });
@@ -266,14 +291,27 @@ router.get('/', verifyAuthToken, async (req, res) => {
 // HELPER FUNCTIONS
 // ============================================================================
 
-function parseVIN(vin) {
-  // Simplified VIN parsing - in production, use a proper library
-  // This is just a placeholder
-  return {
-    year: parseInt(vin.substring(9, 10)) + 2000 || null,
-    make: '',
-    model: '',
-  };
+async function parseVIN(vin) {
+  const response = await fetch(
+    `https://vpic.nhtsa.dot.gov/api/vehicles/decodevinvalues/${encodeURIComponent(vin)}?format=json`
+  );
+
+  if (!response.ok) {
+    throw new Error(`VIN decode service returned status ${response.status}`);
+  }
+
+  const data = await response.json();
+  const result = data.Results?.[0] || {};
+
+  const year = parseInt(result.ModelYear, 10);
+  const make = result.Make || '';
+  const model = result.Model || '';
+
+  if (!year || !make || !model) {
+    throw new Error('Unable to decode year, make, and model from this VIN');
+  }
+
+  return { year, make, model };
 }
 
 function calculateCosts(comparables, conditionData = {}, customReconCost = null) {

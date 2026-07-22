@@ -1,5 +1,5 @@
 import express from 'express';
-import { pool, redisClient } from '../server.js';
+import { pool, redisClient } from '../config/db.js';
 
 const router = express.Router();
 
