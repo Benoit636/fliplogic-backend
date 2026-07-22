@@ -1,6 +1,6 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { pool } from '../server.js';
+import { pool } from '../config/db.js';
 import logger from '../config/logger.js';
 import { verifyAuthToken } from '../middleware/auth.js';
 import { sendSellerAppraisalEmail } from '../services/email.js';

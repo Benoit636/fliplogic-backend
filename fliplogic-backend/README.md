@@ -28,11 +28,11 @@ cp .env.example .env
 
 3. **Create database schema:**
 ```bash
-# Log into PostgreSQL
-psql -U postgres -d fliplogic_dev
+# Base schema (fresh database)
+psql -U postgres -d fliplogic_dev -f src/db/schema.sql
 
-# Run schema.sql
-\i src/db/schema.sql
+# Then apply migrations (safe to re-run; adds columns/tables additively)
+npm run migrate
 ```
 
 4. **Start development server:**
@@ -47,7 +47,8 @@ Server will be available at `http://localhost:3000`
 ## API Endpoints
 
 ### Authentication
-- `POST /api/auth/login` — OAuth login via Firebase
+- `POST /api/auth/register` — Create account (email + password)
+- `POST /api/auth/login` — Login (email + password)
 - `POST /api/auth/logout` — Logout
 
 ### Appraisals
@@ -122,7 +123,7 @@ fliplogic-backend/
 - **OpenAI API** — Photo analysis & vehicle valuation
 - **Stripe** — Payment processing
 - **SendGrid** — Email delivery
-- **Firebase** — Authentication
+- **bcrypt + JWT** — Authentication
 - **Winston** — Logging
 
 ---
@@ -149,14 +150,25 @@ npm run migrate
 ## Deployment
 
 ### Environment Variables
-Before deploying, ensure all required env vars are set:
+Required:
 - `DATABASE_URL` — PostgreSQL connection string
-- `REDIS_URL` — Redis connection string
-- `OPENAI_API_KEY` — OpenAI API key
-- `STRIPE_SECRET_KEY` — Stripe secret key
-- `SENDGRID_API_KEY` — SendGrid API key
 - `JWT_SECRET` — Long random string for JWT signing
-- `FIREBASE_PROJECT_ID`, `FIREBASE_PRIVATE_KEY`, `FIREBASE_CLIENT_EMAIL`
+
+Optional (each feature degrades gracefully rather than crashing the server if unset):
+- `REDIS_URL` — comparable-listing caching is skipped if unset
+- `STRIPE_SECRET_KEY` — Stripe customer creation on signup is skipped if unset
+- `SENDGRID_API_KEY` — used by the seller-email feature
+- `OPENAI_API_KEY` — not currently used by any wired-up route
+
+### Database Migration
+Before the first deploy against a given database, and after every deploy
+that changes `src/db/migrations/`, run:
+```bash
+railway run npm run migrate
+```
+Migrations are additive and idempotent — safe to re-run, and safe to run
+against the existing production database without touching current user
+accounts or data.
 
 ### Docker Deployment
 ```bash

@@ -17,8 +17,8 @@ export async function scrapeAutoTrader(vin, params = {}) {
     maxRetries = 3,
   } = params;
 
-  if (!year || !make || !model) {
-    throw new Error('Year, make, and model are required');
+  if (!year || !make) {
+    throw new Error('Year and make are required');
   }
 
   let browser;
@@ -29,6 +29,11 @@ export async function scrapeAutoTrader(vin, params = {}) {
       browser = await puppeteer.launch({
         headless: 'new',
         args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        // On Alpine (production), puppeteer's own bundled Chromium can't
+        // run — the Dockerfile installs the system `chromium` package and
+        // points this at it instead. Locally/on glibc this is unset, so
+        // puppeteer falls back to its own downloaded browser.
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
       });
 
       const page = await browser.newPage();
@@ -46,42 +51,55 @@ export async function scrapeAutoTrader(vin, params = {}) {
       // Navigate to page
       await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 30000 });
 
-      // Wait for listings to load
-      await page.waitForSelector('[data-testid="listing"]', { timeout: 10000 });
+      // Wait for listings to load. `.list-page-item` is AutoTrader's real,
+      // human-readable class name for each result card — verified against
+      // the live site. Their other classes are CSS-module hashes
+      // (e.g. `ListItem_article__qyYw7`) that change on every deploy, so
+      // this is the more stable thing to key off.
+      await page.waitForSelector('.list-page-item', { timeout: 15000 });
 
-      // Extract listing data
+      // Extract listing data by recognizing the *shape* of each field
+      // (a dollar amount, a "X,XXX km" figure, a "City, PR" location)
+      // within a card's text, rather than exact attribute names — more
+      // resilient to markup changes than guessing hidden test ids.
       const comparables = await page.evaluate((targetMileage) => {
         const listings = [];
-        const elements = document.querySelectorAll('[data-testid="listing"]');
+        const cards = document.querySelectorAll('.list-page-item');
 
-        elements.forEach((el) => {
+        cards.forEach((card) => {
           try {
-            const titleEl = el.querySelector('h2, [data-testid="title"]');
-            const priceEl = el.querySelector('[data-testid="price"]');
-            const mileageEl = el.querySelector('[data-testid="mileage"]');
-            const locationEl = el.querySelector('[data-testid="location"]');
-            const linkEl = el.querySelector('a[href*="/listing/"]');
+            const text = card.innerText || card.textContent || '';
 
-            if (titleEl && priceEl) {
-              const price = parseInt(
-                priceEl.textContent.replace(/[^0-9]/g, '')
-              );
-              const mileageText = mileageEl?.textContent || '0 km';
-              const listingMileage = parseInt(mileageText.replace(/[^0-9]/g, ''));
+            const priceMatch = text.match(/\$\s?([\d,]{4,})/);
+            if (!priceMatch) return;
+            const price = parseInt(priceMatch[1].replace(/,/g, ''), 10);
+            if (!price || price < 500) return;
 
-              // Filter by mileage (±50,000 km of target)
-              if (Math.abs(listingMileage - targetMileage) <= 50000) {
-                listings.push({
-                  title: titleEl.textContent.trim(),
-                  price,
-                  mileage: listingMileage,
-                  location: locationEl?.textContent.trim() || 'Unknown',
-                  url: linkEl?.href || '',
-                  source: 'autotrader',
-                  scrapedAt: new Date().toISOString(),
-                });
-              }
+            const mileageMatch = text.match(/([\d,]+)\s*km\b/i);
+            const listingMileage = mileageMatch
+              ? parseInt(mileageMatch[1].replace(/,/g, ''), 10)
+              : null;
+
+            // Filter by mileage (±50,000 km of target) when we have a
+            // mileage figure; keep the listing if we couldn't find one
+            // rather than discarding it on unparseable data.
+            if (listingMileage !== null && Math.abs(listingMileage - targetMileage) > 50000) {
+              return;
             }
+
+            const headingEl = card.querySelector('h2, h3');
+            const linkEl = card.querySelector('a[href]');
+            const locationMatch = text.match(/([A-Z][a-zA-Z.\s]+,\s?[A-Z]{2})\b/);
+
+            listings.push({
+              title: headingEl?.textContent.trim() || text.split('\n')[0]?.trim().slice(0, 80) || 'Unknown',
+              price,
+              mileage: listingMileage,
+              location: locationMatch ? locationMatch[1].trim() : 'Unknown',
+              url: linkEl?.href || '',
+              source: 'autotrader',
+              scrapedAt: new Date().toISOString(),
+            });
           } catch (err) {
             // Skip problematic listings
           }
@@ -134,7 +152,7 @@ export async function scrapeAutoTrader(vin, params = {}) {
 function buildAutoTraderUrl(year, make, model, radiusKm) {
   const baseUrl = 'https://www.autotrader.ca/cars';
   const params = new URLSearchParams({
-    mkm: `${make},${model}`,
+    mkm: model ? `${make},${model}` : make,
     sts: year.toString(),
     rcs: Math.ceil(radiusKm / 1.60934).toString(), // Convert km to miles
     sort: 'price_asc',

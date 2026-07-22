@@ -1,5 +1,5 @@
 import express from 'express';
-import { pool } from '../server.js';
+import { pool } from '../config/db.js';
 import logger from '../config/logger.js';
 import { verifyAuthToken } from '../middleware/auth.js';
 
