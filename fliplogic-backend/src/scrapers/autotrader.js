@@ -28,7 +28,16 @@ export async function scrapeAutoTrader(vin, params = {}) {
     try {
       browser = await puppeteer.launch({
         headless: 'new',
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          // Docker/Railway containers give /dev/shm a tiny default size
+          // (64MB), which is too small for Chrome's shared memory use on
+          // image-heavy pages like AutoTrader's listings — this makes
+          // Chrome fall back to disk instead of crashing the renderer.
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+        ],
         // On Alpine (production), puppeteer's own bundled Chromium can't
         // run — the Dockerfile installs the system `chromium` package and
         // points this at it instead. Locally/on glibc this is unset, so
