@@ -14,7 +14,7 @@ const createAppraisalSchema = z.object({
   mileage: z.number().min(0).max(999999).optional(),
   appraisalType: z.enum(['on-site', 'sight-unseen']),
   conditionData: z.record(z.any()).optional(),
-  customReconCost: z.number().positive().optional(),
+  customReconCost: z.number().min(0).max(999999).optional(),
   searchRadiusKm: z.number().min(0).max(1500).default(400),
 });
 
@@ -154,7 +154,6 @@ router.post('/:id/analyze', verifyAuthToken, async (req, res) => {
     // Calculate costs
     const { acquisitionCost, reconCost, marketValue } = calculateCosts(
       comparables,
-      appraisal.condition_data,
       appraisal.custom_recon_cost
     );
 
@@ -198,9 +197,9 @@ router.post('/:id/analyze', verifyAuthToken, async (req, res) => {
       pricingStrategy,
       analysis: {
         acquisitionCost,
-        reconCost: updatedAppraisal.custom_recon_cost || reconCost,
+        reconCost,
         marketValue,
-        totalInvestment: acquisitionCost + (updatedAppraisal.custom_recon_cost || reconCost),
+        totalInvestment: acquisitionCost + reconCost,
         comparablesAnalyzed: comparables.length,
       },
     });
@@ -323,76 +322,32 @@ async function parseVIN(vin) {
   return { year, make, model };
 }
 
-function calculateCosts(comparables, conditionData = {}, customReconCost = null) {
+// Used when the dealer doesn't provide their own recon cost estimate.
+// Matches the old condition-questionnaire's cost when every question was
+// left at its default ("good": $500 base detailing + 10% margin).
+const DEFAULT_RECON_COST = 550;
+
+function calculateCosts(comparables, customReconCost = null) {
   if (comparables.length === 0) {
     throw new Error('No comparables to analyze');
   }
 
-  // Calculate average price from comparables
+  // Market value and acquisition cost are both the median price of
+  // comparables — there's no condition-based discount applied since recon
+  // cost is now a direct dealer estimate rather than derived from a
+  // condition questionnaire.
   const prices = comparables.map((c) => c.price).filter((p) => p > 0);
   const medianPrice = prices.sort((a, b) => a - b)[Math.floor(prices.length / 2)];
-
-  // Apply condition discount
-  const discount = calculateConditionDiscount(conditionData);
-  const acquisitionCost = Math.round(medianPrice * (1 - discount));
-
-  // Calculate recon cost (if not custom)
-  let reconCost = customReconCost;
-  if (!reconCost) {
-    reconCost = calculateReconCost(conditionData);
-  }
-
-  // Market value is median of comparables
+  const acquisitionCost = Math.round(medianPrice);
   const marketValue = medianPrice;
+
+  const reconCost = customReconCost ?? DEFAULT_RECON_COST;
 
   return {
     acquisitionCost,
     reconCost,
     marketValue,
   };
-}
-
-function calculateConditionDiscount(conditionData) {
-  if (!conditionData) return 0;
-
-  const discountMap = {
-    good: 0,
-    fair: 0.075,
-    poor: 0.20,
-  };
-
-  let totalDiscount = 0;
-  let count = 0;
-
-  Object.values(conditionData).forEach((condition) => {
-    if (condition in discountMap) {
-      totalDiscount += discountMap[condition];
-      count++;
-    }
-  });
-
-  return count > 0 ? totalDiscount / count : 0;
-}
-
-function calculateReconCost(conditionData = {}) {
-  const costs = {
-    paint: { good: 0, fair: 500, poor: 1500 },
-    tires: { good: 0, fair: 400, poor: 800 },
-    brakes: { good: 0, fair: 300, poor: 600 },
-    glass: { good: 0, fair: 200, poor: 600 },
-    body: { good: 0, fair: 800, poor: 2000 },
-    interior: { good: 0, fair: 400, poor: 1200 },
-  };
-
-  let totalCost = 500; // Base detailing
-
-  Object.entries(conditionData).forEach(([key, value]) => {
-    if (key in costs && value in costs[key]) {
-      totalCost += costs[key][value];
-    }
-  });
-
-  return Math.round(totalCost * 1.1); // Add 10% margin
 }
 
 function generatePricingStrategy(acquisitionCost, reconCost, marketValue) {
