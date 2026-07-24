@@ -332,21 +332,26 @@ function calculateCosts(comparables, customReconCost = null) {
     throw new Error('No comparables to analyze');
   }
 
-  // Market value and acquisition cost are both the median price of
-  // comparables — there's no condition-based discount applied since recon
-  // cost is now a direct dealer estimate rather than derived from a
-  // condition questionnaire.
+  // Market value is the median retail asking price of comparables — what
+  // this vehicle should sell for, not what it should cost to buy.
   const prices = comparables.map((c) => c.price).filter((p) => p > 0);
   const medianPrice = prices.sort((a, b) => a - b)[Math.floor(prices.length / 2)];
-  const acquisitionCost = Math.round(medianPrice);
   const marketValue = medianPrice;
 
   // node-postgres returns NUMERIC columns as strings to avoid precision
   // loss, so custom_recon_cost comes back as e.g. "1500", not 1500. Left
-  // uncoerced, `acquisitionCost + reconCost` below string-concatenates
-  // instead of adding (34388 + "1500" -> "343881500"), which then gets
-  // multiplied into wildly wrong pricing-tier numbers.
+  // uncoerced, arithmetic below string-concatenates instead of adding
+  // (34388 + "1500" -> "343881500"), which then gets multiplied into
+  // wildly wrong numbers.
   const reconCost = customReconCost != null ? Number(customReconCost) : DEFAULT_RECON_COST;
+
+  // Acquisition cost is a buying target, not the retail price: reserve a
+  // target profit (15% of market value) and the recon budget out of market
+  // value, and whatever's left is the most this vehicle should cost to
+  // acquire. Paying full market value (the old behavior) left no room to
+  // profit after recon.
+  const targetProfit = marketValue * 0.15;
+  const acquisitionCost = Math.round(marketValue - reconCost - targetProfit);
 
   return {
     acquisitionCost,
