@@ -346,11 +346,11 @@ function calculateCosts(comparables, customReconCost = null) {
   const reconCost = customReconCost != null ? Number(customReconCost) : DEFAULT_RECON_COST;
 
   // Acquisition cost is a buying target, not the retail price: reserve a
-  // target profit (10% of market value) and the recon budget out of market
+  // target profit (15% of market value) and the recon budget out of market
   // value, and whatever's left is the most this vehicle should cost to
   // acquire. Paying full market value (the old behavior) left no room to
   // profit after recon.
-  const targetProfit = marketValue * 0.1;
+  const targetProfit = marketValue * 0.15;
   const acquisitionCost = Math.round(marketValue - reconCost - targetProfit);
 
   return {
