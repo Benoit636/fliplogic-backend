@@ -341,7 +341,12 @@ function calculateCosts(comparables, customReconCost = null) {
   const acquisitionCost = Math.round(medianPrice);
   const marketValue = medianPrice;
 
-  const reconCost = customReconCost ?? DEFAULT_RECON_COST;
+  // node-postgres returns NUMERIC columns as strings to avoid precision
+  // loss, so custom_recon_cost comes back as e.g. "1500", not 1500. Left
+  // uncoerced, `acquisitionCost + reconCost` below string-concatenates
+  // instead of adding (34388 + "1500" -> "343881500"), which then gets
+  // multiplied into wildly wrong pricing-tier numbers.
+  const reconCost = customReconCost != null ? Number(customReconCost) : DEFAULT_RECON_COST;
 
   return {
     acquisitionCost,
