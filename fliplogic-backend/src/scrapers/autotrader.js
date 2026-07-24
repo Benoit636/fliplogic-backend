@@ -53,7 +53,7 @@ export async function scrapeAutoTrader(vin, params = {}) {
       );
 
       // Build search URL
-      const searchUrl = buildAutoTraderUrl(year, make, model);
+      const searchUrl = buildAutoTraderUrl(year, make, model, radiusKm);
 
       logger.info(`🔍 Scraping AutoTrader: ${searchUrl}`);
 
@@ -174,17 +174,28 @@ export async function scrapeAutoTrader(vin, params = {}) {
  * guessed `mkm=`/`sts=` query params that don't exist, silently landing on
  * an unfiltered listings page and returning unrelated vehicles).
  *
+ * Radius is `zipr` in km (confirmed by comparing the live site's URL
+ * before/after changing its distance filter from the default 100km to
+ * 250km — `zipr=250` appeared). Without it, AutoTrader defaults to a
+ * ~100km radius, which was cutting the comparable pool down to just a
+ * couple of listings even when an appraisal asked for a much wider search.
+ * `size` requests more results per page (confirmed present at 20 in that
+ * same URL) rather than relying on however many the default page holds.
+ *
  * Location is hardcoded to the Dieppe/Moncton, NB area since that's this
- * app's only dealership location. Year and search radius aren't
- * URL-filterable params we've confirmed, so year is enforced client-side
- * in the scrape (see targetYear check above) instead.
+ * app's only dealership location. Year isn't a URL-filterable param we've
+ * confirmed, so it's enforced client-side in the scrape instead (see
+ * targetYear check above). `mcat`/`search_id`/`source` seen on the live
+ * site look like category/session tracking rather than real filters, so
+ * they're left out.
  *
  * @param {number} year - Vehicle year
  * @param {string} make - Vehicle make
  * @param {string} model - Vehicle model
+ * @param {number} radiusKm - Search radius in km
  * @returns {string} Search URL
  */
-function buildAutoTraderUrl(year, make, model) {
+function buildAutoTraderUrl(year, make, model, radiusKm) {
   const pathSegments = ['cars', slugify(make)];
   if (model) pathSegments.push(slugify(model));
   pathSegments.push('reg_nb', 'cit_dieppe');
@@ -194,10 +205,12 @@ function buildAutoTraderUrl(year, make, model) {
     ustate: 'N,U',
     cy: 'CA',
     zip: 'E1A7X9 Dieppe',
+    zipr: Math.round(radiusKm).toString(),
     lat: '46.075922',
     lon: '-64.687669',
     atype: 'C',
     search_type: 'C',
+    size: '20',
   });
 
   return `https://www.autotrader.ca/${pathSegments.join('/')}?${params.toString()}`;
