@@ -89,6 +89,14 @@ export async function scrapeAutoTrader(vin, params = {}) {
             if (!textLower.includes(makeLower)) return;
             if (modelLower && !textLower.includes(modelLower)) return;
 
+            // A plug-in hybrid / hybrid trim (e.g. "Outlander PHEV") is
+            // priced very differently from the regular gas model but still
+            // matches on make/model text alone — don't let it skew the
+            // comparables unless the target vehicle is itself that variant.
+            const isHybridListing = /\bphev\b|\bhybrid\b/i.test(text);
+            const targetIsHybrid = /\bphev\b|\bhybrid\b/i.test(targetModel || '');
+            if (isHybridListing && !targetIsHybrid) return;
+
             const yearMatch = text.match(/\b(19|20)\d{2}\b/);
             const listingYear = yearMatch ? parseInt(yearMatch[0], 10) : null;
             if (listingYear !== null && Math.abs(listingYear - targetYear) > 1) return;
