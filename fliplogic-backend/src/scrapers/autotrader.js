@@ -53,7 +53,7 @@ export async function scrapeAutoTrader(vin, params = {}) {
       );
 
       // Build search URL
-      const searchUrl = buildAutoTraderUrl(year, make, model, radiusKm);
+      const searchUrl = buildAutoTraderUrl(year, make, model);
 
       logger.info(`🔍 Scraping AutoTrader: ${searchUrl}`);
 
@@ -71,13 +71,27 @@ export async function scrapeAutoTrader(vin, params = {}) {
       // (a dollar amount, a "X,XXX km" figure, a "City, PR" location)
       // within a card's text, rather than exact attribute names — more
       // resilient to markup changes than guessing hidden test ids.
-      const comparables = await page.evaluate((targetMileage) => {
+      const comparables = await page.evaluate(({ targetMileage, targetYear, targetMake, targetModel }) => {
         const listings = [];
         const cards = document.querySelectorAll('.list-page-item');
+        const makeLower = targetMake.toLowerCase();
+        const modelLower = targetModel ? targetModel.toLowerCase() : null;
 
         cards.forEach((card) => {
           try {
             const text = card.innerText || card.textContent || '';
+            const textLower = text.toLowerCase();
+
+            // Safety net: the search URL should already scope results to
+            // this make/model, but never trust that alone — reject
+            // anything whose card text doesn't actually mention the make
+            // (and model, when known) being searched for.
+            if (!textLower.includes(makeLower)) return;
+            if (modelLower && !textLower.includes(modelLower)) return;
+
+            const yearMatch = text.match(/\b(19|20)\d{2}\b/);
+            const listingYear = yearMatch ? parseInt(yearMatch[0], 10) : null;
+            if (listingYear !== null && Math.abs(listingYear - targetYear) > 1) return;
 
             const priceMatch = text.match(/\$\s?([\d,]{4,})/);
             if (!priceMatch) return;
@@ -115,7 +129,7 @@ export async function scrapeAutoTrader(vin, params = {}) {
         });
 
         return listings;
-      }, mileage);
+      }, { targetMileage: mileage, targetYear: year, targetMake: make, targetModel: model });
 
       await browser.close();
 
@@ -152,22 +166,49 @@ export async function scrapeAutoTrader(vin, params = {}) {
 
 /**
  * Build AutoTrader.ca search URL
+ *
+ * AutoTrader puts make/model in the URL *path*, not query params — e.g.
+ * a real search for a Ford Escape near Dieppe, NB is:
+ *   https://www.autotrader.ca/cars/ford/escape/reg_nb/cit_dieppe?...
+ * (confirmed against the live site; an earlier version of this function
+ * guessed `mkm=`/`sts=` query params that don't exist, silently landing on
+ * an unfiltered listings page and returning unrelated vehicles).
+ *
+ * Location is hardcoded to the Dieppe/Moncton, NB area since that's this
+ * app's only dealership location. Year and search radius aren't
+ * URL-filterable params we've confirmed, so year is enforced client-side
+ * in the scrape (see targetYear check above) instead.
+ *
  * @param {number} year - Vehicle year
  * @param {string} make - Vehicle make
  * @param {string} model - Vehicle model
- * @param {number} radiusKm - Search radius in km
  * @returns {string} Search URL
  */
-function buildAutoTraderUrl(year, make, model, radiusKm) {
-  const baseUrl = 'https://www.autotrader.ca/cars';
+function buildAutoTraderUrl(year, make, model) {
+  const pathSegments = ['cars', slugify(make)];
+  if (model) pathSegments.push(slugify(model));
+  pathSegments.push('reg_nb', 'cit_dieppe');
+
   const params = new URLSearchParams({
-    mkm: model ? `${make},${model}` : make,
-    sts: year.toString(),
-    rcs: Math.ceil(radiusKm / 1.60934).toString(), // Convert km to miles
-    sort: 'price_asc',
+    offer: 'N,U',
+    ustate: 'N,U',
+    cy: 'CA',
+    zip: 'E1A7X9 Dieppe',
+    lat: '46.075922',
+    lon: '-64.687669',
+    atype: 'C',
+    search_type: 'C',
   });
 
-  return `${baseUrl}?${params.toString()}`;
+  return `https://www.autotrader.ca/${pathSegments.join('/')}?${params.toString()}`;
+}
+
+function slugify(value) {
+  return value
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
 }
 
 /**
