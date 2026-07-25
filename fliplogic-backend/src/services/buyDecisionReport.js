@@ -173,7 +173,7 @@ function computeConfidence({ year, make, model, mileage, condition, retailRange,
   return { score, reasons: topReasons };
 }
 
-function computeDaysToSellRisk({ retailRange, year, mileage }) {
+function computeDaysToSellRisk({ retailRange, year, mileage, grossProfitRating }) {
   let points = 0;
 
   if (!retailRange.sufficient) {
@@ -202,6 +202,15 @@ function computeDaysToSellRisk({ retailRange, year, mileage }) {
     if (mileage > 150000) points += 2;
     else if (mileage > 80000) points += 1;
   } else {
+    points += 1;
+  }
+
+  // A thin or negative margin is itself a hold-time risk: there's no room
+  // to discount the vehicle if it doesn't move quickly, which tends to
+  // mean it sits longer while the price gets renegotiated down.
+  if (grossProfitRating === 'Negative / Avoid') {
+    points += 3;
+  } else if (grossProfitRating === 'Thin') {
     points += 1;
   }
 
@@ -300,7 +309,6 @@ export function buildBuyDecisionReport({
   const retailRange = computeRetailRange(comparables);
   const recon = estimateReconCost({ condition, year, mileage, customReconCost });
   const confidence = computeConfidence({ year, make, model, mileage, condition, retailRange, reconSource: recon.source });
-  const daysToSellRisk = computeDaysToSellRisk({ retailRange, year, mileage });
 
   const missingData = [];
   if (mileage == null) missingData.push('Mileage');
@@ -345,6 +353,10 @@ export function buildBuyDecisionReport({
       grossProfitRating = rateGrossProfit(expectedGrossProfit, targetProfit);
     }
   }
+
+  // Computed after grossProfitRating so a thin/negative deal can itself
+  // factor into hold-time risk (see computeDaysToSellRisk).
+  const daysToSellRisk = computeDaysToSellRisk({ retailRange, year, mileage, grossProfitRating });
 
   const verdict = decideVerdict({
     hasSufficientData: retailRange.sufficient,
