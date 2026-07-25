@@ -87,60 +87,74 @@ function computeConfidence({ year, make, model, mileage, condition, retailRange,
   let score = 50;
   const reasons = [];
 
+  // --- VIN decode quality ---
   if (year && make) {
-    score += 10;
+    score += 8;
   } else {
     score -= 15;
     reasons.push('VIN did not decode complete year/make information.');
   }
-
   if (model) {
-    score += 10;
+    score += 7;
   } else {
     score -= 10;
     reasons.push('Model could not be decoded from the VIN.');
   }
 
+  // --- Market data quality — the single biggest lever on how trustworthy
+  // this report is, so it's weighted more heavily than any one
+  // vehicle-detail field below. ---
   if (retailRange.sufficient) {
-    if (retailRange.count >= 3) {
-      score += 15;
-    } else {
-      score += 8;
+    // Smooth, diminishing-returns curve instead of a hard 1-2-vs-3+ step:
+    // each additional comp up to 5 adds real value, then levels off (a
+    // 12-comp sample isn't meaningfully more trustworthy than a 5-comp
+    // one, but 1 comp vs. 3 comps is a real difference).
+    score += Math.min(25, retailRange.count * 5);
+    if (retailRange.count < 3) {
       reasons.push(`Only ${retailRange.count} comparable listing${retailRange.count === 1 ? '' : 's'} found.`);
     }
+
+    if (retailRange.avg > 0) {
+      const spreadRatio = (retailRange.high - retailRange.low) / retailRange.avg;
+      if (spreadRatio < 0.1) {
+        score += 15;
+      } else if (spreadRatio < 0.2) {
+        score += 8;
+      } else if (spreadRatio < 0.35) {
+        // Neutral — a moderate spread is normal and doesn't itself signal
+        // an untrustworthy estimate.
+      } else if (spreadRatio < 0.5) {
+        score -= 8;
+        reasons.push('Retail price range across comparables is fairly wide.');
+      } else {
+        score -= 15;
+        reasons.push('Retail price range across comparables is very wide.');
+      }
+    }
   } else {
-    score -= 15;
+    score -= 25;
     reasons.push('No comparable market listings were found.');
   }
 
+  // --- Vehicle detail completeness ---
   if (mileage != null) {
-    score += 8;
+    score += 6;
   } else {
     score -= 8;
     reasons.push('Mileage was not provided.');
   }
-
   if (condition) {
-    score += 8;
+    score += 6;
   } else {
     score -= 8;
     reasons.push('Vehicle condition was not provided.');
   }
 
-  if (retailRange.sufficient && retailRange.avg > 0) {
-    const spreadRatio = (retailRange.high - retailRange.low) / retailRange.avg;
-    if (spreadRatio < 0.2) {
-      score += 10;
-    } else if (spreadRatio > 0.5) {
-      score -= 10;
-      reasons.push('Retail price range across comparables is wide.');
-    }
-  }
-
+  // --- Recon cost source ---
   if (reconSource === 'manual') {
-    score += 5;
+    score += 4;
   } else {
-    score -= 5;
+    score -= 4;
     reasons.push('Reconditioning cost is an estimate, not confirmed.');
   }
 
