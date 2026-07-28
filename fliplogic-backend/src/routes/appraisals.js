@@ -5,6 +5,7 @@ import { pool, redisClient } from '../config/db.js';
 import logger from '../config/logger.js';
 import { scrapeAutoTrader } from '../scrapers/autotrader.js';
 import { verifyAuthToken } from '../middleware/auth.js';
+import { buildBuyDecisionReport } from '../services/buyDecisionReport.js';
 
 const router = express.Router();
 
@@ -13,8 +14,9 @@ const createAppraisalSchema = z.object({
   vin: z.string().length(17, 'VIN must be 17 characters'),
   mileage: z.number().min(0).max(999999).optional(),
   appraisalType: z.enum(['on-site', 'sight-unseen']),
-  conditionData: z.record(z.any()).optional(),
+  condition: z.enum(['excellent', 'good', 'average', 'rough']).optional(),
   customReconCost: z.number().min(0).max(999999).optional(),
+  targetGrossProfit: z.number().min(0).max(999999).optional(),
   searchRadiusKm: z.number().min(0).max(1500).default(400),
 });
 
@@ -24,7 +26,7 @@ const createAppraisalSchema = z.object({
  */
 router.post('/', verifyAuthToken, async (req, res) => {
   try {
-    const { vin, mileage, appraisalType, conditionData, customReconCost, searchRadiusKm } =
+    const { vin, mileage, appraisalType, condition, customReconCost, targetGrossProfit, searchRadiusKm } =
       createAppraisalSchema.parse(req.body);
 
     const userId = req.user.id;
@@ -57,8 +59,9 @@ router.post('/', verifyAuthToken, async (req, res) => {
     const insertResult = await pool.query(
       `INSERT INTO appraisals (
         id, user_id, vin, appraisal_type, vehicle_year, vehicle_make,
-        vehicle_model, vehicle_mileage, condition_data, custom_recon_cost, search_radius_km, status
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        vehicle_model, vehicle_mileage, condition_data, custom_recon_cost,
+        target_gross_profit, search_radius_km, status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
       RETURNING *`,
       [
         appraisalId,
@@ -69,8 +72,9 @@ router.post('/', verifyAuthToken, async (req, res) => {
         vehicleData.make,
         vehicleData.model,
         mileage ?? null,
-        JSON.stringify(conditionData || {}),
+        JSON.stringify(condition ? { condition } : {}),
         customReconCost || null,
+        targetGrossProfit || null,
         searchRadiusKm,
         'draft',
       ]
@@ -147,22 +151,39 @@ router.post('/:id/analyze', verifyAuthToken, async (req, res) => {
       }
     }
 
+    // Unlike the old pricing tiers below, the Buy Decision Report is
+    // designed to still produce a (low-confidence, "Walk Away") result
+    // when no comparables were found, rather than hard-failing — a dealer
+    // should still see *why* the deal can't be assessed, not just an
+    // error popup.
     if (comparables.length === 0) {
-      return res.status(400).json({ error: 'No comparable vehicles found. Try increasing search radius.' });
+      logger.warn(`No comparables found for appraisal ${id} — generating a report with insufficient market data instead of failing.`);
     }
 
-    // Calculate costs
-    const { acquisitionCost, reconCost, marketValue } = calculateCosts(
-      comparables,
-      appraisal.custom_recon_cost
-    );
+    let acquisitionCost = null;
+    let reconCost = null;
+    let marketValue = null;
+    let pricingStrategy = null;
+    if (comparables.length > 0) {
+      ({ acquisitionCost, reconCost, marketValue } = calculateCosts(
+        comparables,
+        appraisal.custom_recon_cost
+      ));
+      pricingStrategy = generatePricingStrategy(acquisitionCost, reconCost, marketValue);
+    }
 
-    // Generate pricing strategy
-    const pricingStrategy = generatePricingStrategy(
-      acquisitionCost,
-      reconCost,
-      marketValue
-    );
+    const condition = appraisal.condition_data?.condition || null;
+    const buyDecisionReport = buildBuyDecisionReport({
+      vin: appraisal.vin,
+      year: appraisal.vehicle_year,
+      make: appraisal.vehicle_make,
+      model: appraisal.vehicle_model,
+      mileage: appraisal.vehicle_mileage,
+      condition,
+      comparables,
+      customReconCost: appraisal.custom_recon_cost != null ? Number(appraisal.custom_recon_cost) : null,
+      targetGrossProfit: appraisal.target_gross_profit != null ? Number(appraisal.target_gross_profit) : null,
+    });
 
     // Update appraisal with results
     const updateResult = await pool.query(
@@ -173,8 +194,9 @@ router.post('/:id/analyze', verifyAuthToken, async (req, res) => {
         comps_analyzed = $4,
         comps_data = $5,
         pricing_strategy = $6,
-        status = $7
-      WHERE id = $8
+        buy_decision_report = $7,
+        status = $8
+      WHERE id = $9
       RETURNING *`,
       [
         acquisitionCost,
@@ -182,7 +204,8 @@ router.post('/:id/analyze', verifyAuthToken, async (req, res) => {
         reconCost,
         comparables.length,
         JSON.stringify(comparables),
-        JSON.stringify(pricingStrategy),
+        pricingStrategy ? JSON.stringify(pricingStrategy) : null,
+        JSON.stringify(buyDecisionReport),
         'complete',
         id,
       ]
@@ -190,18 +213,19 @@ router.post('/:id/analyze', verifyAuthToken, async (req, res) => {
 
     const updatedAppraisal = updateResult.rows[0];
 
-    logger.info(`✅ Appraisal analyzed: ${id}`);
+    logger.info(`✅ Appraisal analyzed: ${id} — verdict: ${buyDecisionReport.verdict.decision}`);
 
     res.json({
       appraisal: updatedAppraisal,
+      buyDecisionReport,
       pricingStrategy,
-      analysis: {
+      analysis: acquisitionCost != null ? {
         acquisitionCost,
         reconCost,
         marketValue,
         totalInvestment: acquisitionCost + reconCost,
         comparablesAnalyzed: comparables.length,
-      },
+      } : null,
     });
   } catch (error) {
     logger.error('Error analyzing appraisal:', error);
@@ -230,22 +254,29 @@ router.get('/:id', verifyAuthToken, async (req, res) => {
     const appraisal = result.rows[0];
 
     if (appraisal.status !== 'complete') {
-      return res.json({ appraisal, pricingStrategy: null, analysis: null });
+      return res.json({ appraisal, pricingStrategy: null, analysis: null, buyDecisionReport: null });
     }
 
-    const acquisitionCost = Number(appraisal.acquisition_cost);
-    const reconCost = Number(appraisal.custom_recon_cost || appraisal.system_recon_estimate);
+    // acquisition_cost/market_value can be null when analysis ran with no
+    // comparables — the Buy Decision Report still exists in that case
+    // (it's designed to degrade gracefully), but the legacy pricing-tier
+    // numbers don't.
+    const acquisitionCost = appraisal.acquisition_cost != null ? Number(appraisal.acquisition_cost) : null;
+    const reconCost = appraisal.custom_recon_cost != null
+      ? Number(appraisal.custom_recon_cost)
+      : (appraisal.system_recon_estimate != null ? Number(appraisal.system_recon_estimate) : null);
 
     res.json({
       appraisal,
       pricingStrategy: appraisal.pricing_strategy,
-      analysis: {
+      buyDecisionReport: appraisal.buy_decision_report,
+      analysis: acquisitionCost != null ? {
         acquisitionCost,
         reconCost,
         marketValue: Number(appraisal.market_value),
-        totalInvestment: acquisitionCost + reconCost,
+        totalInvestment: acquisitionCost + (reconCost || 0),
         comparablesAnalyzed: appraisal.comps_analyzed,
-      },
+      } : null,
     });
   } catch (error) {
     logger.error('Error fetching appraisal:', error);
