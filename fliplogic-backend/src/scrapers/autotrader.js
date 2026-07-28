@@ -1,26 +1,80 @@
 import puppeteer from 'puppeteer';
 import logger from '../config/logger.js';
 
+// Below this many (cleaned, deduped) comparables, the search radius gets
+// automatically widened once and retried — a search this thin makes for a
+// low-confidence report even before any of the actual pricing math runs.
+const MIN_DESIRED_COMPARABLES = 3;
+const MAX_RADIUS_KM = 1500;
+
 /**
- * Scrape AutoTrader.ca for comparable vehicles
+ * Scrape AutoTrader.ca for comparable vehicles, widening the search radius
+ * once if the initial pass comes back thin.
  * @param {string} vin - Vehicle VIN
  * @param {object} params - Search parameters
  * @returns {Promise<Array>} Array of comparable vehicles
  */
 export async function scrapeAutoTrader(vin, params = {}) {
-  const {
-    year,
-    make,
-    model,
-    mileage = 0,
-    radiusKm = 400,
-    maxRetries = 3,
-  } = params;
+  const { year, make, model, mileage = 0, radiusKm = 400, maxRetries = 3 } = params;
 
   if (!year || !make) {
     throw new Error('Year and make are required');
   }
 
+  const comparables = cleanComparables(
+    await scrapeAutoTraderOnce({ year, make, model, mileage, radiusKm, maxRetries })
+  );
+
+  if (comparables.length >= MIN_DESIRED_COMPARABLES || radiusKm >= MAX_RADIUS_KM) {
+    return comparables;
+  }
+
+  const widerRadiusKm = Math.min(radiusKm * 2, MAX_RADIUS_KM);
+  logger.info(
+    `⚠️ Only ${comparables.length} comparable(s) within ${radiusKm}km — retrying with a wider ${widerRadiusKm}km radius.`
+  );
+
+  const widerComparables = cleanComparables(
+    await scrapeAutoTraderOnce({ year, make, model, mileage, radiusKm: widerRadiusKm, maxRetries })
+  );
+
+  if (widerComparables.length > comparables.length) {
+    logger.info(`✅ Wider search found ${widerComparables.length} comparables (up from ${comparables.length}).`);
+    return widerComparables;
+  }
+
+  return comparables;
+}
+
+/**
+ * Deduplicate (repost/cross-listing duplicates share a URL, or the exact
+ * same title/price/mileage) and drop statistical outliers that would
+ * otherwise skew a small sample's median/low/high — e.g. one wildly
+ * mispriced or wrong-trim listing swinging the whole retail range.
+ */
+function cleanComparables(listings) {
+  const seen = new Set();
+  const deduped = [];
+  for (const listing of listings) {
+    const key = listing.url || `${listing.title}|${listing.price}|${listing.mileage}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(listing);
+  }
+
+  // Trimming needs enough of a sample to be meaningful, and never trims
+  // below a usable floor — if the bounds would eliminate almost
+  // everything, the median itself is untrustworthy, so keep the raw set.
+  if (deduped.length < 4) return deduped;
+
+  const prices = deduped.map((l) => l.price).sort((a, b) => a - b);
+  const median = prices[Math.floor(prices.length / 2)];
+  const filtered = deduped.filter((l) => l.price >= median * 0.4 && l.price <= median * 2.5);
+
+  return filtered.length >= 3 ? filtered : deduped;
+}
+
+async function scrapeAutoTraderOnce({ year, make, model, mileage, radiusKm, maxRetries }) {
   let browser;
   let attempt = 0;
 
@@ -66,6 +120,20 @@ export async function scrapeAutoTrader(vin, params = {}) {
       // (e.g. `ListItem_article__qyYw7`) that change on every deploy, so
       // this is the more stable thing to key off.
       await page.waitForSelector('.list-page-item', { timeout: 15000 });
+
+      // AutoTrader lazy-loads additional result cards as the page scrolls —
+      // reading only what's rendered in the initial viewport leaves real
+      // comparables on the table. Scroll a few times, stopping as soon as a
+      // scroll doesn't add any new cards (either the page has no more, or
+      // it's finished loading).
+      let previousCardCount = 0;
+      for (let scrollAttempt = 0; scrollAttempt < 4; scrollAttempt++) {
+        const cardCount = await page.evaluate(() => document.querySelectorAll('.list-page-item').length);
+        if (cardCount <= previousCardCount) break;
+        previousCardCount = cardCount;
+        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+        await new Promise((resolve) => setTimeout(resolve, 800));
+      }
 
       // Extract listing data by recognizing the *shape* of each field
       // (a dollar amount, a "X,XXX km" figure, a "City, PR" location)
