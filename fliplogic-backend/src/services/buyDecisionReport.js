@@ -346,8 +346,15 @@ export function buildBuyDecisionReport({
   missingData.push('Accident / damage history');
 
   // Wider risk buffer when confidence is lower — 5% at high confidence,
-  // up to 10% when data is thin.
-  const riskBufferPct = confidence.score >= 80 ? 0.05 : confidence.score >= 50 ? 0.075 : 0.1;
+  // up to 10% when data is thin. Skipped entirely when the dealer entered
+  // their own recon cost: at that point they're already providing a real
+  // number instead of our estimate, and stacking an automatic buffer on
+  // top of a manually-entered recon *and* a manually-entered target
+  // profit made the recommended price feel arbitrarily low compared to
+  // what the dealer actually asked for.
+  const riskBufferPct = recon.source === 'manual'
+    ? 0
+    : (confidence.score >= 80 ? 0.05 : confidence.score >= 50 ? 0.075 : 0.1);
 
   let conservativeRetailValue = null;
   let riskBuffer = null;

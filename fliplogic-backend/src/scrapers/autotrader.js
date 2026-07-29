@@ -2,14 +2,21 @@ import puppeteer from 'puppeteer';
 import logger from '../config/logger.js';
 
 // Below this many (cleaned, deduped) comparables, the search radius gets
-// automatically widened once and retried — a search this thin makes for a
-// low-confidence report even before any of the actual pricing math runs.
-const MIN_DESIRED_COMPARABLES = 3;
+// automatically widened and retried, up to MAX_WIDEN_ATTEMPTS times — a
+// search this thin makes for a low-confidence report even before any of
+// the actual pricing math runs. This is deliberately higher than a bare
+// minimum: tools like vAuto pull comps from dealer networks and multiple
+// listing sources and can show ~10, where we're scraping a single site
+// (AutoTrader.ca) — pushing harder here narrows that gap, though a
+// single-source scrape may still land under what a multi-source
+// aggregator shows.
+const MIN_DESIRED_COMPARABLES = 6;
 const MAX_RADIUS_KM = 1500;
+const MAX_WIDEN_ATTEMPTS = 2;
 
 /**
  * Scrape AutoTrader.ca for comparable vehicles, widening the search radius
- * once if the initial pass comes back thin.
+ * (up to MAX_WIDEN_ATTEMPTS times) if the pass comes back thin.
  * @param {string} vin - Vehicle VIN
  * @param {object} params - Search parameters
  * @returns {Promise<Array>} Array of comparable vehicles
@@ -21,29 +28,36 @@ export async function scrapeAutoTrader(vin, params = {}) {
     throw new Error('Year and make are required');
   }
 
-  const comparables = cleanComparables(
+  let best = cleanComparables(
     await scrapeAutoTraderOnce({ year, make, model, mileage, radiusKm, maxRetries })
   );
+  let currentRadiusKm = radiusKm;
 
-  if (comparables.length >= MIN_DESIRED_COMPARABLES || radiusKm >= MAX_RADIUS_KM) {
-    return comparables;
+  for (let attempt = 0; attempt < MAX_WIDEN_ATTEMPTS; attempt++) {
+    if (best.length >= MIN_DESIRED_COMPARABLES || currentRadiusKm >= MAX_RADIUS_KM) {
+      break;
+    }
+
+    const widerRadiusKm = Math.min(currentRadiusKm * 2, MAX_RADIUS_KM);
+    logger.info(
+      `⚠️ Only ${best.length} comparable(s) within ${currentRadiusKm}km — retrying (${attempt + 1}/${MAX_WIDEN_ATTEMPTS}) with a wider ${widerRadiusKm}km radius.`
+    );
+
+    const wider = cleanComparables(
+      await scrapeAutoTraderOnce({ year, make, model, mileage, radiusKm: widerRadiusKm, maxRetries })
+    );
+
+    // Only keep the wider result if it's actually an improvement — a
+    // legitimately sparse market shouldn't get diluted by a flukier
+    // wider search that happens to return fewer/worse matches.
+    if (wider.length > best.length) {
+      logger.info(`✅ Wider search found ${wider.length} comparables (up from ${best.length}).`);
+      best = wider;
+    }
+    currentRadiusKm = widerRadiusKm;
   }
 
-  const widerRadiusKm = Math.min(radiusKm * 2, MAX_RADIUS_KM);
-  logger.info(
-    `⚠️ Only ${comparables.length} comparable(s) within ${radiusKm}km — retrying with a wider ${widerRadiusKm}km radius.`
-  );
-
-  const widerComparables = cleanComparables(
-    await scrapeAutoTraderOnce({ year, make, model, mileage, radiusKm: widerRadiusKm, maxRetries })
-  );
-
-  if (widerComparables.length > comparables.length) {
-    logger.info(`✅ Wider search found ${widerComparables.length} comparables (up from ${comparables.length}).`);
-    return widerComparables;
-  }
-
-  return comparables;
+  return best;
 }
 
 /**
