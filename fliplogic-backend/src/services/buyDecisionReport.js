@@ -25,6 +25,31 @@ const RECON_DEFAULT_MISSING_CONDITION = 2000;
 
 const DEFAULT_TARGET_GROSS_PROFIT = 3000;
 
+/**
+ * Target gross profit can be entered as a flat dollar amount or as a
+ * percentage of the vehicle's conservative retail value — resolve
+ * whichever was given down to a single dollar figure the rest of the
+ * engine can use.
+ */
+function resolveTargetGrossProfit({ targetGrossProfit, targetGrossProfitMode, conservativeRetailValue }) {
+  if (targetGrossProfit == null) {
+    return { amount: DEFAULT_TARGET_GROSS_PROFIT, mode: 'default', percent: null };
+  }
+
+  if (targetGrossProfitMode === 'percentage') {
+    const percent = Number(targetGrossProfit);
+    // A percentage target needs a retail value to apply it to — if the
+    // market data is insufficient, there's nothing to take a % of yet,
+    // so fall back to the flat default rather than silently ignoring it.
+    if (conservativeRetailValue == null) {
+      return { amount: DEFAULT_TARGET_GROSS_PROFIT, mode: 'default', percent: null };
+    }
+    return { amount: Math.round(conservativeRetailValue * (percent / 100)), mode: 'percentage', percent };
+  }
+
+  return { amount: Number(targetGrossProfit), mode: 'dollar', percent: null };
+}
+
 function estimateReconCost({ condition, year, mileage, customReconCost }) {
   if (customReconCost != null) {
     return { amount: Number(customReconCost), source: 'manual', notes: [] };
@@ -292,7 +317,8 @@ function decideVerdict({
  * @param {string|null} input.condition - 'excellent' | 'good' | 'average' | 'rough'
  * @param {Array<{price:number}>} input.comparables
  * @param {number|null} input.customReconCost - manual override, takes priority over the estimate
- * @param {number|null} input.targetGrossProfit - defaults to DEFAULT_TARGET_GROSS_PROFIT
+ * @param {number|null} input.targetGrossProfit - a dollar amount or a percentage, depending on targetGrossProfitMode; defaults to DEFAULT_TARGET_GROSS_PROFIT if omitted
+ * @param {string|null} input.targetGrossProfitMode - 'dollar' | 'percentage'; treated as 'dollar' unless explicitly 'percentage'
  * @returns {object} the full Buy Decision Report
  */
 export function buildBuyDecisionReport({
@@ -305,6 +331,7 @@ export function buildBuyDecisionReport({
   comparables,
   customReconCost,
   targetGrossProfit,
+  targetGrossProfitMode,
 }) {
   const retailRange = computeRetailRange(comparables);
   const recon = estimateReconCost({ condition, year, mileage, customReconCost });
@@ -317,8 +344,6 @@ export function buildBuyDecisionReport({
   if (!model) missingData.push('Vehicle model (VIN decode incomplete)');
   // No data source for this yet (no VIN history/accident-report integration) — always flag.
   missingData.push('Accident / damage history');
-
-  const targetProfit = targetGrossProfit != null ? Number(targetGrossProfit) : DEFAULT_TARGET_GROSS_PROFIT;
 
   // Wider risk buffer when confidence is lower — 5% at high confidence,
   // up to 10% when data is thin.
@@ -336,10 +361,17 @@ export function buildBuyDecisionReport({
   // non-positive recommendedMaxBuyPrice is the real "walk away" signal.
   let noProfitablePrice = false;
 
+  // Deliberately conservative: the midpoint between the low comp and the
+  // median, not the average or high end. Computed before target profit
+  // since a percentage-based target needs this value to apply the % to.
   if (retailRange.sufficient) {
-    // Deliberately conservative: the midpoint between the low comp and the
-    // median, not the average or high end.
     conservativeRetailValue = Math.round((retailRange.low + retailRange.avg) / 2);
+  }
+
+  const targetProfitResolved = resolveTargetGrossProfit({ targetGrossProfit, targetGrossProfitMode, conservativeRetailValue });
+  const targetProfit = targetProfitResolved.amount;
+
+  if (retailRange.sufficient) {
     riskBuffer = Math.round(conservativeRetailValue * riskBufferPct);
     recommendedMaxBuyPrice = Math.round(conservativeRetailValue - recon.amount - targetProfit - riskBuffer);
 
@@ -384,6 +416,8 @@ export function buildBuyDecisionReport({
     profitCalculation: {
       conservativeRetailValue,
       targetGrossProfit: targetProfit,
+      targetGrossProfitMode: targetProfitResolved.mode, // 'dollar' | 'percentage' | 'default'
+      targetGrossProfitPercent: targetProfitResolved.percent, // set only when mode is 'percentage'
       riskBufferPct,
       riskBuffer,
       recommendedMaxBuyPrice,

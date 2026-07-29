@@ -10,15 +10,23 @@ import { buildBuyDecisionReport } from '../services/buyDecisionReport.js';
 const router = express.Router();
 
 // Validation schemas
-const createAppraisalSchema = z.object({
-  vin: z.string().length(17, 'VIN must be 17 characters'),
-  mileage: z.number().min(0).max(999999).optional(),
-  appraisalType: z.enum(['on-site', 'sight-unseen']),
-  condition: z.enum(['excellent', 'good', 'average', 'rough']).optional(),
-  customReconCost: z.number().min(0).max(999999).optional(),
-  targetGrossProfit: z.number().min(0).max(999999).optional(),
-  searchRadiusKm: z.number().min(0).max(1500).default(400),
-});
+const createAppraisalSchema = z
+  .object({
+    vin: z.string().length(17, 'VIN must be 17 characters'),
+    mileage: z.number().min(0).max(999999).optional(),
+    appraisalType: z.enum(['on-site', 'sight-unseen']),
+    condition: z.enum(['excellent', 'good', 'average', 'rough']).optional(),
+    customReconCost: z.number().min(0).max(999999).optional(),
+    // In dollar mode this is a flat amount; in percentage mode it's a % of
+    // retail value, so 0-999999 doesn't make sense — checked below.
+    targetGrossProfit: z.number().min(0).max(999999).optional(),
+    targetGrossProfitMode: z.enum(['dollar', 'percentage']).optional(),
+    searchRadiusKm: z.number().min(0).max(1500).default(400),
+  })
+  .refine(
+    (data) => data.targetGrossProfitMode !== 'percentage' || data.targetGrossProfit == null || data.targetGrossProfit <= 100,
+    { message: 'Target gross profit percentage must be 100 or less', path: ['targetGrossProfit'] }
+  );
 
 /**
  * POST /api/appraisals
@@ -26,7 +34,7 @@ const createAppraisalSchema = z.object({
  */
 router.post('/', verifyAuthToken, async (req, res) => {
   try {
-    const { vin, mileage, appraisalType, condition, customReconCost, targetGrossProfit, searchRadiusKm } =
+    const { vin, mileage, appraisalType, condition, customReconCost, targetGrossProfit, targetGrossProfitMode, searchRadiusKm } =
       createAppraisalSchema.parse(req.body);
 
     const userId = req.user.id;
@@ -60,8 +68,8 @@ router.post('/', verifyAuthToken, async (req, res) => {
       `INSERT INTO appraisals (
         id, user_id, vin, appraisal_type, vehicle_year, vehicle_make,
         vehicle_model, vehicle_mileage, condition_data, custom_recon_cost,
-        target_gross_profit, search_radius_km, status
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        target_gross_profit, target_gross_profit_mode, search_radius_km, status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
       RETURNING *`,
       [
         appraisalId,
@@ -75,6 +83,7 @@ router.post('/', verifyAuthToken, async (req, res) => {
         JSON.stringify(condition ? { condition } : {}),
         customReconCost || null,
         targetGrossProfit || null,
+        targetGrossProfit != null ? (targetGrossProfitMode || 'dollar') : null,
         searchRadiusKm,
         'draft',
       ]
@@ -183,6 +192,7 @@ router.post('/:id/analyze', verifyAuthToken, async (req, res) => {
       comparables,
       customReconCost: appraisal.custom_recon_cost != null ? Number(appraisal.custom_recon_cost) : null,
       targetGrossProfit: appraisal.target_gross_profit != null ? Number(appraisal.target_gross_profit) : null,
+      targetGrossProfitMode: appraisal.target_gross_profit_mode || null,
     });
 
     // Update appraisal with results
