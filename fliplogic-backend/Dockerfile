@@ -20,4 +20,11 @@ RUN npm install --omit=dev
 COPY src ./src
 RUN mkdir -p logs
 EXPOSE 3000
-CMD ["node", "src/server.js"]
+# Run any pending migrations before starting the server, so a new schema
+# change (e.g. a new column) takes effect automatically on deploy instead
+# of requiring someone to manually run `npm run migrate` against
+# production. Migrations are all idempotent (ADD COLUMN IF NOT EXISTS),
+# so re-running already-applied ones on every deploy is safe. If a
+# migration fails, `&&` stops the container from starting the server
+# against a schema it doesn't match, rather than failing silently later.
+CMD ["sh", "-c", "node src/db/migrate.js && node src/server.js"]
