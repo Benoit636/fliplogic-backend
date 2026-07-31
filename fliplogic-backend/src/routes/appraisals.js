@@ -28,6 +28,38 @@ const createAppraisalSchema = z
     { message: 'Target gross profit percentage must be 100 or less', path: ['targetGrossProfit'] }
   );
 
+// Manual entry: the dealer types in appraisal data from their own tool
+// (vAuto, etc.) instead of us scraping/decoding it — no VIN-decode step,
+// no comparables search. This is the primary intake path now.
+const manualAppraisalSchema = z
+  .object({
+    vin: z.string().length(17, 'VIN must be 17 characters'),
+    year: z.number().int().min(1980).max(new Date().getFullYear() + 1),
+    make: z.string().trim().min(1, 'Make is required'),
+    model: z.string().trim().min(1, 'Model is required'),
+    trim: z.string().trim().max(100).optional(),
+    mileage: z.number().min(0).max(999999).optional(),
+    condition: z.enum(['excellent', 'good', 'average', 'rough']).optional(),
+    appraisalToolValue: z.number().min(0).max(999999).optional(),
+    lowRetail: z.number().min(0).max(999999),
+    avgRetail: z.number().min(0).max(999999),
+    highRetail: z.number().min(0).max(999999),
+    comparableCount: z.number().int().min(0).max(999).optional(),
+    estimatedReconCost: z.number().min(0).max(999999).optional(),
+    targetGrossProfit: z.number().min(0).max(999999).optional(),
+    targetGrossProfitMode: z.enum(['dollar', 'percentage']).optional(),
+    notes: z.string().max(2000).optional(),
+    knownRisks: z.string().max(2000).optional(),
+  })
+  .refine(
+    (data) => data.targetGrossProfitMode !== 'percentage' || data.targetGrossProfit == null || data.targetGrossProfit <= 100,
+    { message: 'Target gross profit percentage must be 100 or less', path: ['targetGrossProfit'] }
+  )
+  .refine((data) => data.lowRetail <= data.avgRetail && data.avgRetail <= data.highRetail, {
+    message: 'Retail values must satisfy low ≤ average ≤ high',
+    path: ['avgRetail'],
+  });
+
 /**
  * POST /api/appraisals
  * Create a new appraisal
@@ -239,6 +271,99 @@ router.post('/:id/analyze', verifyAuthToken, async (req, res) => {
     });
   } catch (error) {
     logger.error('Error analyzing appraisal:', error);
+    res.status(error.status || 500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/appraisals/manual
+ * Create a Buy Decision Report from appraisal data the dealer already has
+ * (typed in from their own appraisal tool) — computed synchronously, no
+ * scraping or VIN-decode step involved.
+ */
+router.post('/manual', verifyAuthToken, async (req, res) => {
+  try {
+    const data = manualAppraisalSchema.parse(req.body);
+    const userId = req.user.id;
+    const appraisalId = uuidv4();
+
+    const userResult = await pool.query(
+      'SELECT subscription_status FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const { subscription_status } = userResult.rows[0];
+    if (!['trial', 'active'].includes(subscription_status)) {
+      return res.status(403).json({ error: 'Subscription expired or inactive' });
+    }
+
+    const targetGrossProfitMode = data.targetGrossProfit != null ? (data.targetGrossProfitMode || 'dollar') : null;
+
+    const buyDecisionReport = buildBuyDecisionReport({
+      vin: data.vin,
+      year: data.year,
+      make: data.make,
+      model: data.model,
+      trim: data.trim || null,
+      mileage: data.mileage ?? null,
+      condition: data.condition || null,
+      retailData: {
+        low: data.lowRetail,
+        avg: data.avgRetail,
+        high: data.highRetail,
+        comparableCount: data.comparableCount ?? null,
+      },
+      appraisalToolValue: data.appraisalToolValue ?? null,
+      customReconCost: data.estimatedReconCost ?? null,
+      targetGrossProfit: data.targetGrossProfit ?? null,
+      targetGrossProfitMode,
+      notes: data.notes || null,
+      knownRisks: data.knownRisks || null,
+    });
+
+    const insertResult = await pool.query(
+      `INSERT INTO appraisals (
+        id, user_id, vin, appraisal_type, vehicle_year, vehicle_make,
+        vehicle_model, vehicle_trim, vehicle_mileage, condition_data,
+        custom_recon_cost, target_gross_profit, target_gross_profit_mode,
+        buy_decision_report, notes, status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+      RETURNING *`,
+      [
+        appraisalId,
+        userId,
+        data.vin,
+        'manual',
+        data.year,
+        data.make,
+        data.model,
+        data.trim || null,
+        data.mileage ?? null,
+        JSON.stringify(data.condition ? { condition: data.condition } : {}),
+        data.estimatedReconCost ?? null,
+        data.targetGrossProfit ?? null,
+        targetGrossProfitMode,
+        JSON.stringify(buyDecisionReport),
+        data.notes || null,
+        'complete',
+      ]
+    );
+
+    const appraisal = insertResult.rows[0];
+
+    logger.info(`✅ Manual appraisal created: ${appraisalId} for user ${userId} — verdict: ${buyDecisionReport.verdict.decision}`);
+
+    res.status(201).json({
+      id: appraisal.id,
+      appraisal,
+      buyDecisionReport,
+    });
+  } catch (error) {
+    logger.error('Error creating manual appraisal:', error);
     res.status(error.status || 500).json({ error: error.message });
   }
 });
