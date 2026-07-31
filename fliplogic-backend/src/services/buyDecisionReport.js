@@ -95,7 +95,7 @@ function computeRetailRange(comparables) {
     .filter((p) => typeof p === 'number' && p > 0);
 
   if (prices.length === 0) {
-    return { low: null, avg: null, high: null, count: 0, sufficient: false };
+    return { low: null, avg: null, high: null, count: 0, sufficient: false, source: 'scraped' };
   }
 
   const sorted = [...prices].sort((a, b) => a - b);
@@ -105,7 +105,31 @@ function computeRetailRange(comparables) {
     avg: sorted[Math.floor(sorted.length / 2)], // median — consistent with the rest of the app's "market value"
     count: prices.length,
     sufficient: true,
+    source: 'scraped',
   };
+}
+
+/**
+ * A dealer typing in the low/avg/high retail values straight from their own
+ * appraisal tool (vAuto, etc.) is the primary intake path now — this is
+ * just an alternative source for the same {low, avg, high, count,
+ * sufficient} shape computeRetailRange produces from scraped comparables,
+ * so everything downstream (confidence, risk, buy price) works unchanged
+ * regardless of where the numbers came from.
+ */
+function resolveRetailRange({ comparables, retailData }) {
+  if (retailData && retailData.low != null && retailData.avg != null && retailData.high != null) {
+    return {
+      low: Number(retailData.low),
+      avg: Number(retailData.avg),
+      high: Number(retailData.high),
+      count: retailData.comparableCount != null ? Number(retailData.comparableCount) : 0,
+      sufficient: true,
+      source: 'manual',
+    };
+  }
+
+  return computeRetailRange(comparables);
 }
 
 function computeConfidence({ year, make, model, mileage, condition, retailRange, reconSource }) {
@@ -315,10 +339,15 @@ function decideVerdict({
  * @param {string|null} input.model
  * @param {number|null} input.mileage
  * @param {string|null} input.condition - 'excellent' | 'good' | 'average' | 'rough'
- * @param {Array<{price:number}>} input.comparables
+ * @param {string|null} input.trim
+ * @param {Array<{price:number}>} input.comparables - scraped comparables; ignored if retailData is given
+ * @param {{low:number,avg:number,high:number,comparableCount:number}|null} input.retailData - retail range entered manually (e.g. from the dealer's own appraisal tool), takes priority over comparables
+ * @param {number|null} input.appraisalToolValue - the value the dealer's own appraisal tool already produced, shown for reference only — not used in the calculation
  * @param {number|null} input.customReconCost - manual override, takes priority over the estimate
  * @param {number|null} input.targetGrossProfit - a dollar amount or a percentage, depending on targetGrossProfitMode; defaults to DEFAULT_TARGET_GROSS_PROFIT if omitted
  * @param {string|null} input.targetGrossProfitMode - 'dollar' | 'percentage'; treated as 'dollar' unless explicitly 'percentage'
+ * @param {string|null} input.notes
+ * @param {string|null} input.knownRisks
  * @returns {object} the full Buy Decision Report
  */
 export function buildBuyDecisionReport({
@@ -326,14 +355,19 @@ export function buildBuyDecisionReport({
   year,
   make,
   model,
+  trim,
   mileage,
   condition,
   comparables,
+  retailData,
+  appraisalToolValue,
   customReconCost,
   targetGrossProfit,
   targetGrossProfitMode,
+  notes,
+  knownRisks,
 }) {
-  const retailRange = computeRetailRange(comparables);
+  const retailRange = resolveRetailRange({ comparables, retailData });
   const recon = estimateReconCost({ condition, year, mileage, customReconCost });
   const confidence = computeConfidence({ year, make, model, mileage, condition, retailRange, reconSource: recon.source });
 
@@ -407,13 +441,19 @@ export function buildBuyDecisionReport({
   });
 
   return {
-    vehicle: { vin, year, make, model, mileage, condition: condition || null },
+    vehicle: { vin, year, make, model, trim: trim || null, mileage, condition: condition || null },
+    appraisalInput: {
+      appraisalToolValue: appraisalToolValue != null ? Number(appraisalToolValue) : null,
+      notes: notes || null,
+      knownRisks: knownRisks || null,
+    },
     marketSnapshot: {
       lowRetail: retailRange.low,
       avgRetail: retailRange.avg,
       highRetail: retailRange.high,
       comparablesUsed: retailRange.count,
       sufficientData: retailRange.sufficient,
+      source: retailRange.source, // 'manual' | 'scraped'
     },
     reconEstimate: {
       amount: Math.round(recon.amount),
