@@ -369,6 +369,28 @@ router.post('/manual', verifyAuthToken, async (req, res) => {
 });
 
 /**
+ * GET /api/appraisals/decode-vin/:vin
+ * Best-effort year/make/model/trim lookup to auto-fill the manual-entry
+ * form as soon as a valid VIN is entered — a failed or incomplete decode
+ * just means the dealer fills those fields in by hand, same as before
+ * this existed.
+ */
+router.get('/decode-vin/:vin', verifyAuthToken, async (req, res) => {
+  const { vin } = req.params;
+
+  if (!vin || vin.length !== 17) {
+    return res.status(400).json({ error: 'VIN must be 17 characters' });
+  }
+
+  try {
+    const vehicleData = await parseVIN(vin);
+    res.json(vehicleData);
+  } catch (err) {
+    res.status(422).json({ error: err.message });
+  }
+});
+
+/**
  * GET /api/appraisals/:id
  * Get appraisal details
  */
@@ -473,6 +495,7 @@ async function parseVIN(vin) {
   const year = parseInt(result.ModelYear, 10);
   const make = result.Make || '';
   const model = result.Model || '';
+  const trim = result.Trim || '';
 
   // Year and Make come from fixed VIN-position tables and are reliable on
   // any clean decode. Model depends on the manufacturer's own data
@@ -485,7 +508,7 @@ async function parseVIN(vin) {
     logger.warn(`VIN ${vin} decoded without a Model (NHTSA: ${result.ErrorText || 'no model data'})`);
   }
 
-  return { year, make, model };
+  return { year, make, model, trim };
 }
 
 // Used when the dealer doesn't provide their own recon cost estimate.
