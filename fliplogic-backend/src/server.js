@@ -17,8 +17,15 @@ const PORT = process.env.PORT || 3000;
 
 logger.info(`DATABASE_URL: ${process.env.DATABASE_URL ? 'SET' : 'NOT SET'}`);
 
+const frontendUrl = process.env.FRONTEND_URL || '*';
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || '*',
+  origin(origin, callback) {
+    if (!origin) return callback(null, true);
+    if (frontendUrl === '*' || origin === frontendUrl) return callback(null, true);
+    if (origin.startsWith('chrome-extension://')) return callback(null, true);
+    return callback(new Error('Not allowed by CORS'));
+  },
   credentials: true,
 }));
 
