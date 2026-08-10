@@ -31,25 +31,30 @@ const createAppraisalSchema = z
 // Manual entry: the dealer types in appraisal data from their own tool
 // (vAuto, etc.) instead of us scraping/decoding it — no VIN-decode step,
 // no comparables search. This is the primary intake path now.
+//
+// Optional fields use .nullish() rather than .optional(): callers like the
+// FlipLogic Capture extension send an explicit `null` (not an omitted key)
+// when a field genuinely has no value on the source page (e.g. no Black
+// Book condition checkbox selected), and .optional() alone rejects that.
 const manualAppraisalSchema = z
   .object({
     vin: z.string().length(17, 'VIN must be 17 characters'),
     year: z.number().int().min(1980).max(new Date().getFullYear() + 1),
     make: z.string().trim().min(1, 'Make is required'),
     model: z.string().trim().min(1, 'Model is required'),
-    trim: z.string().trim().max(100).optional(),
-    mileage: z.number().min(0).max(999999).optional(),
-    condition: z.enum(['excellent', 'good', 'average', 'rough']).optional(),
-    appraisalToolValue: z.number().min(0).max(999999).optional(),
+    trim: z.string().trim().max(100).nullish(),
+    mileage: z.number().min(0).max(999999).nullish(),
+    condition: z.enum(['excellent', 'good', 'average', 'rough']).nullish(),
+    appraisalToolValue: z.number().min(0).max(999999).nullish(),
     lowRetail: z.number().min(0).max(999999),
     avgRetail: z.number().min(0).max(999999),
     highRetail: z.number().min(0).max(999999),
-    comparableCount: z.number().int().min(0).max(999).optional(),
-    estimatedReconCost: z.number().min(0).max(999999).optional(),
-    targetGrossProfit: z.number().min(0).max(999999).optional(),
-    targetGrossProfitMode: z.enum(['dollar', 'percentage']).optional(),
-    notes: z.string().max(2000).optional(),
-    knownRisks: z.string().max(2000).optional(),
+    comparableCount: z.number().int().min(0).max(999).nullish(),
+    estimatedReconCost: z.number().min(0).max(999999).nullish(),
+    targetGrossProfit: z.number().min(0).max(999999).nullish(),
+    targetGrossProfitMode: z.enum(['dollar', 'percentage']).nullish(),
+    notes: z.string().max(2000).nullish(),
+    knownRisks: z.string().max(2000).nullish(),
   })
   .refine(
     (data) => data.targetGrossProfitMode !== 'percentage' || data.targetGrossProfit == null || data.targetGrossProfit <= 100,
