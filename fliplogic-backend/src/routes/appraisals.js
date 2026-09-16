@@ -6,6 +6,7 @@ import logger from '../config/logger.js';
 import { scrapeAutoTrader } from '../scrapers/autotrader.js';
 import { verifyAuthToken } from '../middleware/auth.js';
 import { buildBuyDecisionReport } from '../services/buyDecisionReport.js';
+import { flipLogicAppraisalSchema, toEngineInput } from '../schemas/flipLogicAppraisal.js';
 
 const router = express.Router();
 
@@ -32,38 +33,9 @@ const createAppraisalSchema = z
 // (vAuto, etc.) instead of us scraping/decoding it — no VIN-decode step,
 // no comparables search. This is the primary intake path now.
 //
-// Optional fields use .nullish() rather than .optional(): callers like the
-// FlipLogic Capture extension send an explicit `null` (not an omitted key)
-// when a field genuinely has no value on the source page (e.g. no Black
-// Book condition checkbox selected), and .optional() alone rejects that.
-const manualAppraisalSchema = z
-  .object({
-    vin: z.string().length(17, 'VIN must be 17 characters'),
-    year: z.number().int().min(1980).max(new Date().getFullYear() + 1),
-    make: z.string().trim().min(1, 'Make is required'),
-    model: z.string().trim().min(1, 'Model is required'),
-    trim: z.string().trim().max(100).nullish(),
-    mileage: z.number().min(0).max(999999).nullish(),
-    condition: z.enum(['excellent', 'good', 'average', 'rough']).nullish(),
-    appraisalToolValue: z.number().min(0).max(999999).nullish(),
-    lowRetail: z.number().min(0).max(999999),
-    avgRetail: z.number().min(0).max(999999),
-    highRetail: z.number().min(0).max(999999),
-    comparableCount: z.number().int().min(0).max(999).nullish(),
-    estimatedReconCost: z.number().min(0).max(999999).nullish(),
-    targetGrossProfit: z.number().min(0).max(999999).nullish(),
-    targetGrossProfitMode: z.enum(['dollar', 'percentage']).nullish(),
-    notes: z.string().max(2000).nullish(),
-    knownRisks: z.string().max(2000).nullish(),
-  })
-  .refine(
-    (data) => data.targetGrossProfitMode !== 'percentage' || data.targetGrossProfit == null || data.targetGrossProfit <= 100,
-    { message: 'Target gross profit percentage must be 100 or less', path: ['targetGrossProfit'] }
-  )
-  .refine((data) => data.lowRetail <= data.avgRetail && data.avgRetail <= data.highRetail, {
-    message: 'Retail values must satisfy low ≤ average ≤ high',
-    path: ['avgRetail'],
-  });
+// The validation schema itself now lives in schemas/flipLogicAppraisal.js —
+// this is the same contract the vAuto Capture extension's payload has to
+// satisfy too, so it's named and shared rather than defined inline here.
 
 /**
  * POST /api/appraisals
@@ -288,7 +260,7 @@ router.post('/:id/analyze', verifyAuthToken, async (req, res) => {
  */
 router.post('/manual', verifyAuthToken, async (req, res) => {
   try {
-    const data = manualAppraisalSchema.parse(req.body);
+    const data = flipLogicAppraisalSchema.parse(req.body);
     const userId = req.user.id;
     const appraisalId = uuidv4();
 
@@ -306,29 +278,8 @@ router.post('/manual', verifyAuthToken, async (req, res) => {
       return res.status(403).json({ error: 'Subscription expired or inactive' });
     }
 
-    const targetGrossProfitMode = data.targetGrossProfit != null ? (data.targetGrossProfitMode || 'dollar') : null;
-
-    const buyDecisionReport = buildBuyDecisionReport({
-      vin: data.vin,
-      year: data.year,
-      make: data.make,
-      model: data.model,
-      trim: data.trim || null,
-      mileage: data.mileage ?? null,
-      condition: data.condition || null,
-      retailData: {
-        low: data.lowRetail,
-        avg: data.avgRetail,
-        high: data.highRetail,
-        comparableCount: data.comparableCount ?? null,
-      },
-      appraisalToolValue: data.appraisalToolValue ?? null,
-      customReconCost: data.estimatedReconCost ?? null,
-      targetGrossProfit: data.targetGrossProfit ?? null,
-      targetGrossProfitMode,
-      notes: data.notes || null,
-      knownRisks: data.knownRisks || null,
-    });
+    const { engineInput, targetGrossProfitMode } = toEngineInput(data);
+    const buyDecisionReport = buildBuyDecisionReport(engineInput);
 
     const insertResult = await pool.query(
       `INSERT INTO appraisals (
