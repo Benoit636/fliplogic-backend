@@ -48,9 +48,10 @@ const samplePayload = {
   avgRetail: 28500,
   highRetail: 31000,
   comparableCount: 8,
+  source: 'vauto',
 };
 
-test('POST /run returns a full report for a valid payload, no DB involved', async () => {
+test('POST /run returns a report and the intermediate Universal Appraisal, no DB involved', async () => {
   await withServer('development', async (base) => {
     const res = await fetch(`${base}/api/dev/parity/run`, {
       method: 'POST',
@@ -61,25 +62,31 @@ test('POST /run returns a full report for a valid payload, no DB involved', asyn
     assert.equal(res.status, 200);
     assert.equal(body.ok, true);
     assert.ok(['Buy', 'Negotiate', 'Walk Away'].includes(body.report.verdict.decision));
+    assert.equal(body.universalAppraisal.source.type, 'vauto');
+    assert.equal(body.universalAppraisal.condition.exterior, null);
   });
 });
 
-test('POST /compare diffs two identical payloads for the same vehicle as a pass', async () => {
+test('POST /compare diffs two identical payloads for the same vehicle as a pass, on all three tiers', async () => {
   await withServer('development', async (base) => {
     const res = await fetch(`${base}/api/dev/parity/compare`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ testA: samplePayload, testB: { ...samplePayload } }),
+      body: JSON.stringify({ testA: samplePayload, testB: { ...samplePayload, source: 'manual' } }),
     });
     const body = await res.json();
     assert.equal(res.status, 200);
     assert.equal(body.pass, true);
     assert.equal(body.vin, samplePayload.vin);
-    assert.equal(body.fieldDiffs.length, 9);
+    assert.ok(Array.isArray(body.inputDiffs));
+    assert.ok(Array.isArray(body.normalizedDiffs));
+    assert.ok(Array.isArray(body.outputDiffs));
+    assert.equal(body.universalA.source.type, 'vauto');
+    assert.equal(body.universalB.source.type, 'manual');
   });
 });
 
-test('POST /compare surfaces a real difference as a fail', async () => {
+test('POST /compare surfaces a real difference as a fail on the normalized and output tiers', async () => {
   await withServer('development', async (base) => {
     const res = await fetch(`${base}/api/dev/parity/compare`, {
       method: 'POST',
@@ -88,6 +95,22 @@ test('POST /compare surfaces a real difference as a fail', async () => {
     });
     const body = await res.json();
     assert.equal(body.pass, false);
+    assert.ok(body.normalizedDiffs.some((d) => d.field === 'market.avg' && !d.withinTolerance));
+  });
+});
+
+test('differing source alone does not cause a fail', async () => {
+  await withServer('development', async (base) => {
+    const res = await fetch(`${base}/api/dev/parity/compare`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        testA: { ...samplePayload, source: 'vauto' },
+        testB: { ...samplePayload, source: 'manual' },
+      }),
+    });
+    const body = await res.json();
+    assert.equal(body.pass, true);
   });
 });
 
@@ -123,5 +146,16 @@ test('POST /run rejects an invalid payload with the same validation as productio
     const body = await res.json();
     assert.equal(res.status, 400);
     assert.equal(body.ok, false);
+  });
+});
+
+test('POST /run rejects an unrecognized source value', async () => {
+  await withServer('development', async (base) => {
+    const res = await fetch(`${base}/api/dev/parity/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ ...samplePayload, source: 'carfax' }),
+    });
+    assert.equal(res.status, 400);
   });
 });

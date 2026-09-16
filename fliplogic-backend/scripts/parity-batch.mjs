@@ -138,9 +138,20 @@ async function runCase(baseUrl, token, testCase, index) {
     label,
     vin: body.vin,
     pass: body.pass,
-    fieldDiffs: body.fieldDiffs,
+    inputDiffs: body.inputDiffs,
+    normalizedDiffs: body.normalizedDiffs,
+    outputDiffs: body.outputDiffs,
     missingInputs: body.missingInputs,
   };
+}
+
+function printTierFailures(tierName, diffs) {
+  const failing = (diffs || []).filter((d) => !d.withinTolerance);
+  if (failing.length === 0) return;
+  console.log(`         ${tierName}:`);
+  for (const diff of failing) {
+    console.log(`           ✗ ${diff.field}: testA=${diff.testA}  testB=${diff.testB}  diff=${diff.diff}`);
+  }
 }
 
 function printResult(result) {
@@ -154,11 +165,18 @@ function printResult(result) {
   }
 
   if (!result.pass) {
-    for (const diff of result.fieldDiffs) {
-      if (!diff.withinTolerance) {
-        console.log(`         ✗ ${diff.field}: testA=${diff.testA}  testB=${diff.testB}  diff=${diff.diff}`);
-      }
-    }
+    // Normalized-schema differences are what actually gate pass/fail
+    // (see services/parityCompare.js) — shown first since they're the
+    // more actionable signal. Output differences are shown too, since a
+    // normalized mismatch usually (not always) produces one. Raw input
+    // differences are informational only and only printed if neither
+    // deciding tier explains the failure, to avoid noise.
+    printTierFailures('Normalized schema', result.normalizedDiffs);
+    printTierFailures('Engine output', result.outputDiffs);
+    const decidingTiersEmpty =
+      (result.normalizedDiffs || []).every((d) => d.withinTolerance) &&
+      (result.outputDiffs || []).every((d) => d.withinTolerance);
+    if (decidingTiersEmpty) printTierFailures('Raw input (informational)', result.inputDiffs);
   }
 }
 

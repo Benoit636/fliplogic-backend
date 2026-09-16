@@ -6,7 +6,7 @@ import logger from '../config/logger.js';
 import { scrapeAutoTrader } from '../scrapers/autotrader.js';
 import { verifyAuthToken } from '../middleware/auth.js';
 import { buildBuyDecisionReport } from '../services/buyDecisionReport.js';
-import { flipLogicAppraisalSchema, toEngineInput } from '../schemas/flipLogicAppraisal.js';
+import { flipLogicAppraisalSchema, normalizeToUniversalAppraisal, toEngineInput } from '../schemas/flipLogicAppraisal.js';
 
 const router = express.Router();
 
@@ -117,6 +117,11 @@ router.post('/', verifyAuthToken, async (req, res) => {
 /**
  * POST /api/appraisals/:id/analyze
  * Trigger appraisal analysis (scraping, AI analysis, calculations)
+ *
+ * LEGACY PATH — not called by anything in the current product UI (see the
+ * LEGACY comment above calculateCosts()/generatePricingStrategy() further
+ * down this file). Its buy_decision_report field does still come from the
+ * real engine; its acquisitionCost/pricingStrategy fields do not.
  */
 router.post('/:id/analyze', verifyAuthToken, async (req, res) => {
   try {
@@ -278,8 +283,15 @@ router.post('/manual', verifyAuthToken, async (req, res) => {
       return res.status(403).json({ error: 'Subscription expired or inactive' });
     }
 
-    const { engineInput, targetGrossProfitMode } = toEngineInput(data);
+    // Stage 2 + 3 of the independence architecture: normalize the wire
+    // payload into the Universal FlipLogic Appraisal Schema, then flatten
+    // that into the engine's own argument shape. The manual-entry form
+    // never sends `source`, so it falls back to 'manual' here — the vAuto
+    // Capture extension sends `source: 'vauto'` explicitly instead.
+    const universalAppraisal = normalizeToUniversalAppraisal(data, 'manual');
+    const engineInput = toEngineInput(universalAppraisal);
     const buyDecisionReport = buildBuyDecisionReport(engineInput);
+    const targetGrossProfitMode = universalAppraisal.dealerEconomics.targetGrossProfitMode;
 
     const insertResult = await pool.query(
       `INSERT INTO appraisals (
@@ -467,6 +479,30 @@ async function parseVIN(vin) {
   return { year, make, model, trim };
 }
 
+// =============================================================================
+// LEGACY / NOT PART OF THE CURRENT FLIPLOGIC ACQUISITION ENGINE
+// =============================================================================
+//
+// calculateCosts() and generatePricingStrategy() below are a second,
+// independent acquisition formula — flat 15% margin, a flat $550 recon
+// default, no confidence/risk/verdict concept — predating the Buy
+// Decision Report engine (services/buyDecisionReport.js /
+// buildBuyDecisionReport()). They are called only from POST
+// /api/appraisals/:id/analyze, which ALSO calls the real engine
+// separately for the same appraisal — so that one route currently
+// computes two disagreeing sets of numbers side by side (acquisitionCost/
+// pricingStrategy from these functions vs. buy_decision_report from the
+// real engine). See the architecture audit, §1 Path C.
+//
+// grep across fliplogic-web/src confirms no page in the current product
+// calls POST /api/appraisals or POST /api/appraisals/:id/analyze — this
+// code is reachable but orphaned from the UI.
+//
+// Per the Phase 1 independence-audit follow-up: do not use these
+// functions for any new functionality, and do not let the Universal
+// FlipLogic Appraisal Schema or buildBuyDecisionReport() call them.
+// Left in place, unmodified, pending a separate decision on removal.
+//
 // Used when the dealer doesn't provide their own recon cost estimate.
 // Matches the old condition-questionnaire's cost when every question was
 // left at its default ("good": $500 base detailing + 10% margin).

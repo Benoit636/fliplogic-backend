@@ -20,7 +20,8 @@
         "targetGrossProfit": null,
         "targetGrossProfitMode": null,
         "notes": null,
-        "knownRisks": "Lots of scratches, tailgate rust staring."
+        "knownRisks": "Lots of scratches, tailgate rust staring.",
+        "source": "vauto"
       },
       "testB": {
         "vin": "2T3B1RFV8NC290456",
@@ -35,7 +36,8 @@
         "highRetail": 31000,
         "comparableCount": 8,
         "notes": null,
-        "knownRisks": "Lots of scratches, tailgate rust staring."
+        "knownRisks": "Lots of scratches, tailgate rust staring.",
+        "source": "manual"
       }
     }
   ]
