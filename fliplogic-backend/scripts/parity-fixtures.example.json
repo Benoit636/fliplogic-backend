@@ -1,0 +1,42 @@
+{
+  "_note": "EXAMPLE fixture file, not real dealer data. Each case pairs testA (what the vAuto extension actually captured) with testB (the identical vehicle entered manually) so parity-batch.mjs can diff them. Replace the 'cases' array with the 10 real VW Moncton appraisals when ready — one case per vehicle, both sides filled in from the same real deal. The single case below reuses numbers already present in this repo's own test suite (src/schemas/flipLogicAppraisal.test.js) purely so the script has something real to run against out of the box.",
+  "cases": [
+    {
+      "label": "EXAMPLE — 2022 Toyota RAV4 (from flipLogicAppraisal.test.js fixtures, not a real pilot deal)",
+      "testA": {
+        "vin": "2T3B1RFV8NC290456",
+        "year": 2022,
+        "make": "Toyota",
+        "model": "RAV4",
+        "trim": null,
+        "mileage": 42000,
+        "condition": "good",
+        "appraisalToolValue": 22000,
+        "lowRetail": 24947,
+        "avgRetail": 28500,
+        "highRetail": 31000,
+        "comparableCount": 8,
+        "estimatedReconCost": null,
+        "targetGrossProfit": null,
+        "targetGrossProfitMode": null,
+        "notes": null,
+        "knownRisks": "Lots of scratches, tailgate rust staring."
+      },
+      "testB": {
+        "vin": "2T3B1RFV8NC290456",
+        "year": 2022,
+        "make": "Toyota",
+        "model": "RAV4",
+        "mileage": 42000,
+        "condition": "good",
+        "appraisalToolValue": 22000,
+        "lowRetail": 24947,
+        "avgRetail": 28500,
+        "highRetail": 31000,
+        "comparableCount": 8,
+        "notes": null,
+        "knownRisks": "Lots of scratches, tailgate rust staring."
+      }
+    }
+  ]
+}
