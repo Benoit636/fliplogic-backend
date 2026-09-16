@@ -9,6 +9,7 @@ import usersRoutes from './routes/users.js';
 import listingsRoutes from './routes/listings.js';
 import subscriptionsRoutes from './routes/subscriptions.js';
 import healthRoutes from './routes/health.js';
+import parityRoutes from './routes/parity.js';
 
 dotenv.config();
 
@@ -43,6 +44,7 @@ app.use('/api/appraisals', appraisalsRoutes);
 app.use('/api/users', usersRoutes);
 app.use('/api/listings', listingsRoutes);
 app.use('/api/subscriptions', subscriptionsRoutes);
+app.use('/api/dev/parity', parityRoutes);
 
 app.use((err, req, res, next) => {
   logger.error('Unhandled error:', err);
